@@ -9,6 +9,7 @@ venv/
 
 # Local Tool Config
 .claude/
+tools/
 
 # Local Notes
 NOTES.md

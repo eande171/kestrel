@@ -1,6 +1,7 @@
 """Plays the network's greedy legal move against the baseline engine."""
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -35,6 +36,7 @@ class MatchResult:
     plies: list[int] = field(default_factory=list)
     endings: dict[str, int] = field(default_factory=dict)
     seconds_per_move: float = 0.0
+    move_lists: list[list[str]] = field(default_factory=list)
 
     @property
     def games(self) -> int:
@@ -65,8 +67,10 @@ def play_match(
     seed: int = 0,
     search_depth: int = 0,
     width: int = 6,
+    opponent: Callable[[list[str]], str] | None = None,
+    on_game: Callable[[int, MatchResult], None] | None = None,
 ) -> MatchResult:
-    """Plays games against the baseline at a fixed depth, alternating colours across a small opening book."""
+    """Plays games against the baseline at a fixed depth, or another opponent, alternating colours over an opening book."""
     was_training = model.training
     model.eval()
     result = MatchResult(depth=depth)
@@ -92,6 +96,8 @@ def play_match(
                         mv = network_move(model, state, device)
                     net_seconds += time.time() - start
                     net_moves += 1
+                elif opponent:
+                    mv = opponent(moves)
                 else:
                     mv = engine.best_move(depth)
                 if mv not in state.legal:
@@ -109,6 +115,9 @@ def play_match(
                     result.losses += 1
             else:
                 result.draws += 1
+            result.move_lists.append(moves)
+            if on_game:
+                on_game(g, result)
         result.seconds_per_move = net_seconds / max(1, net_moves)
     model.train(was_training)
     return result
