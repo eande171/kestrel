@@ -6,7 +6,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Instant;
 
 use cozy_chess::{Board, Color, Move, Piece, Square};
-use ruzstd::decoding::{FrameDecoder, StreamingDecoder};
+use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
+use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
 
 use crate::game::parse_san;
 
@@ -73,31 +74,57 @@ struct Headers {
 
 // Multi Frame Zstd
 struct MultiFrame<R: BufRead> {
-    inner: Option<StreamingDecoder<R, FrameDecoder>>,
+    source: R,
+    decoder: FrameDecoder,
+    in_frame: bool,
 }
 
 impl<R: BufRead> MultiFrame<R> {
-    fn new(source: R) -> io::Result<Self> {
-        let mut decoder = FrameDecoder::new();
-        decoder.set_max_window_size(1 << 31);
-        let inner = StreamingDecoder::new_with_decoder(source, decoder).map_err(io::Error::other)?;
-        Ok(MultiFrame { inner: Some(inner) })
+    fn new(source: R) -> Self {
+        MultiFrame { source, decoder: FrameDecoder::new(), in_frame: false }
+    }
+
+    fn start_frame(&mut self) -> io::Result<bool> {
+        loop {
+            if self.source.fill_buf()?.is_empty() {
+                return Ok(false);
+            }
+            self.decoder.set_max_window_size(1 << 31);
+            match self.decoder.init(&mut self.source) {
+                Ok(()) => return Ok(true),
+                Err(FrameDecoderError::ReadFrameHeaderError(ReadFrameHeaderError::SkipFrame { length, .. })) => {
+                    io::copy(&mut (&mut self.source).take(length as u64), &mut io::sink())?;
+                }
+                Err(e) => return Err(io::Error::other(e)),
+            }
+        }
     }
 }
 
 impl<R: BufRead> Read for MultiFrame<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
         loop {
-            let Some(dec) = self.inner.as_mut() else { return Ok(0) };
-            let n = dec.read(buf)?;
-            if n > 0 || buf.is_empty() {
+            if !self.in_frame {
+                if !self.start_frame()? {
+                    return Ok(0);
+                }
+                self.in_frame = true;
+            }
+            while self.decoder.can_collect() == 0 && !self.decoder.is_finished() {
+                self.decoder
+                    .decode_blocks(&mut self.source, BlockDecodingStrategy::UptoBlocks(1))
+                    .map_err(io::Error::other)?;
+            }
+            let n = self.decoder.read(buf)?;
+            if n > 0 {
                 return Ok(n);
             }
-            let (mut source, decoder) = self.inner.take().unwrap().into_parts();
-            if source.fill_buf()?.is_empty() {
-                return Ok(0);
+            if self.decoder.is_finished() && self.decoder.can_collect() == 0 {
+                self.in_frame = false;
             }
-            self.inner = Some(StreamingDecoder::new_with_decoder(source, decoder).map_err(io::Error::other)?);
         }
     }
 }
@@ -132,7 +159,7 @@ fn open_input(
     };
     let counted = BufReader::with_capacity(1 << 20, Counting { inner: raw, count: counter });
     let reader: Box<dyn BufRead> = if input.ends_with(".zst") {
-        Box::new(BufReader::with_capacity(1 << 20, MultiFrame::new(counted)?))
+        Box::new(BufReader::with_capacity(1 << 20, MultiFrame::new(counted)))
     } else {
         Box::new(counted)
     };
