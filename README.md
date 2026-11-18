@@ -13,8 +13,6 @@ Milestone 1 (this repository so far):
 - a training setup that can run unattended and resume after a stop or crash
 - a deliberately simple baseline engine to measure the network against
 
-See `NOTES.md` for the decisions behind this and `REPORT.md` for the results.
-
 ## Layout
 
 ```

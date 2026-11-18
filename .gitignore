@@ -7,6 +7,10 @@ __pycache__/
 .venv/
 venv/
 
+# Local Notes
+NOTES.md
+REPORT.md
+
 # Data, checkpoints, logs and exported models
 data/
 runs/
