@@ -7,6 +7,9 @@ __pycache__/
 .venv/
 venv/
 
+# Local Tool Config
+.claude/
+
 # Local Notes
 NOTES.md
 REPORT.md

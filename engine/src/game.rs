@@ -29,13 +29,14 @@ impl Outcome {
 #[derive(Clone)]
 pub struct Game {
     pub board: Board,
+    pub plies: usize,
     hashes: Vec<u64>,
 }
 
 impl Game {
     pub fn new(board: Board) -> Self {
         let hashes = vec![board.hash()];
-        Game { board, hashes }
+        Game { board, plies: 0, hashes }
     }
 
     pub fn startpos() -> Self {
@@ -54,6 +55,7 @@ impl Game {
             self.hashes.clear();
         }
         self.hashes.push(self.board.hash());
+        self.plies += 1;
         Ok(())
     }
 

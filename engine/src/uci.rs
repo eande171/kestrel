@@ -36,7 +36,10 @@ pub fn run(default_depth: u32, seed: u64) {
                     game = g;
                     String::new()
                 }
-                Err(e) => format!("info string error {e}"),
+                Err(e) => {
+                    game = Game::startpos();
+                    format!("info string error {e}")
+                }
             },
             "go" => {
                 let depth = tokens
@@ -62,10 +65,11 @@ pub fn run(default_depth: u32, seed: u64) {
             "state" => {
                 let legal: Vec<String> = game.legal_moves().into_iter().map(|m| game.uci(m)).collect();
                 format!(
-                    "fen {}\nstatus {}\nrepetitions {}\nlegal {}\nendstate",
+                    "fen {}\nstatus {}\nrepetitions {}\nplies {}\nlegal {}\nendstate",
                     game.board,
                     game.outcome().name(),
                     game.repetitions(),
+                    game.plies,
                     legal.join(" ")
                 )
             }
@@ -74,9 +78,10 @@ pub fn run(default_depth: u32, seed: u64) {
                 for mv in game.legal_moves() {
                     let mut child = game.clone();
                     let uci = game.uci(mv);
+                    let san = display_san_move(&game.board, mv).to_string();
                     if child.play(mv).is_ok() {
                         lines.push(format!(
-                            "child {uci} {} {} {}",
+                            "child {uci} {san} {} {} {}",
                             child.outcome().name(),
                             child.repetitions(),
                             child.board

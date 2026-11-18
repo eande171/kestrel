@@ -13,11 +13,13 @@ class State:
     status: str
     legal: list[str]
     repetitions: int = 0
+    plies: int = 0
 
 
 @dataclass
 class Child:
     move: str
+    san: str
     status: str
     repetitions: int
     fen: str
@@ -67,15 +69,19 @@ class Engine:
         if "fen" not in fields:
             raise RuntimeError(f"engine error: {lines}")
         return State(
-            fields["fen"], fields["status"], fields.get("legal", "").split(), int(fields.get("repetitions", 0))
+            fields["fen"],
+            fields["status"],
+            fields.get("legal", "").split(),
+            int(fields.get("repetitions", 0)),
+            int(fields.get("plies", 0)),
         )
 
     def children(self) -> list[Child]:
         self._send("children")
         children = []
         for line in self._read_until("endchildren")[:-1]:
-            _, move, status, reps, fen = line.split(" ", 4)
-            children.append(Child(move, status, int(reps), fen))
+            _, move, san, status, reps, fen = line.split(" ", 5)
+            children.append(Child(move, san, status, int(reps), fen))
         return children
 
     def parse(self, text: str) -> tuple[str, str] | None:

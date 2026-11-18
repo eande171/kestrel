@@ -19,7 +19,8 @@ Milestone 1 (this repository so far):
 engine/          Rust crate: board wrapper, perft tests, baseline engine, UCI loop, PGN to shards pipeline
 python/chess_ai/ encoding, model, training, evaluation matches, ONNX export
 python/tests/    encoding consistency check against the Rust engine
-scripts/         train.ps1 (start or resume training)
+scripts/         train.ps1 (start or resume training), web.ps1 and play.ps1 (play the network)
+web/             browser UI served by python/chess_ai/web.py
 data/            training shards (not committed)
 runs/            checkpoints, logs and exported models (not committed)
 ```
@@ -43,6 +44,19 @@ D:\chess-venv\Scripts\python.exe -m pip install -r python\requirements.txt
 ```
 
 ## Playing the network
+
+In the browser:
+
+```powershell
+.\scripts\web.ps1                     # starts a local server on http://localhost:8000 and opens it
+.\scripts\web.ps1 -Port 8080 -NoOpen
+```
+
+Click or drag pieces to move. Choose your colour and strength (Instinct plays its first idea, Careful looks 2 moves ahead, Strong looks 3 ahead) and start a new game. Undo, flip, resign and copy PGN are next to the board. Ctrl+C in the terminal stops the server.
+
+The page in `web/` is plain HTML, CSS and JavaScript with no build step. It holds the game itself and asks the server only two things: the legal moves and status for a move list (`POST /api/position`) and chess-ai's reply (`POST /api/move`). The server keeps no game state and only listens on 127.0.0.1. A later in-browser engine can answer the same two questions without the page changing.
+
+In the terminal:
 
 ```powershell
 .\scripts\play.ps1                    # random colour, search depth 3 (about a quarter of a second per move)
