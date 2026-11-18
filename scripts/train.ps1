@@ -1,5 +1,4 @@
-# Starts or resumes training and restarts it after a crash.
-# Usage: .\scripts\train.ps1 [-Run runs/main] [-Data data/shards_2026-10] [-Quiet] [extra train.py options]
+# Train Launcher
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$Run = "runs/main",

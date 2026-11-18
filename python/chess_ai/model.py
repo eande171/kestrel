@@ -81,7 +81,7 @@ class ChessNet(nn.Module):
         k = self.key(p).flatten(2).reshape(b, 4, self.key_dim, 64)
         scale = 1.0 / math.sqrt(self.key_dim)
 
-        # Normal Moves And Queen Promotions
+        # Base Moves
         base = torch.matmul(q, k[:, 0]) * scale + self.square_bias
         logits = [base.reshape(b, 4096)]
 
