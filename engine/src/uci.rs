@@ -1,6 +1,8 @@
 use std::io::{self, BufRead, Write};
 
-use crate::game::{ascii_board, Game};
+use cozy_chess::util::{display_san_move, parse_uci_move};
+
+use crate::game::{ascii_board, parse_san, Game};
 use crate::search::Baseline;
 
 pub fn run(default_depth: u32, seed: u64) {
@@ -83,6 +85,16 @@ pub fn run(default_depth: u32, seed: u64) {
                 }
                 lines.push("endchildren".to_string());
                 lines.join("\n")
+            }
+            "parse" => {
+                let text = tokens.get(1).copied().unwrap_or("");
+                let parsed = parse_san(&game.board, text)
+                    .ok()
+                    .or_else(|| parse_uci_move(&game.board, text).ok().filter(|&m| game.board.is_legal(m)));
+                match parsed {
+                    Some(mv) => format!("parsed {} {}", game.uci(mv), display_san_move(&game.board, mv)),
+                    None => "parsed none".to_string(),
+                }
             }
             "d" => format!("{}fen {}", ascii_board(&game.board), game.board),
             "quit" => break,

@@ -42,6 +42,16 @@ D:\chess-venv\Scripts\python.exe -m pip install torch --index-url https://downlo
 D:\chess-venv\Scripts\python.exe -m pip install -r python\requirements.txt
 ```
 
+## Playing the network
+
+```powershell
+.\scripts\play.ps1                    # random colour, search depth 3 (about a quarter of a second per move)
+.\scripts\play.ps1 -Color white -Depth 2
+.\scripts\play.ps1 -Depth 0           # top move only, no look ahead (weakest)
+```
+
+Type moves in standard notation (`e4`, `Nf3`, `exd5`, `O-O`, `e8=Q`) or as squares (`e2e4`). Pieces need capital letters. Other commands are `undo`, `flip`, `moves`, `resign` and `help`. The last move is shown in brackets on the board, uppercase letters are White and lowercase are Black. Each game is saved as a PGN file in `runs/games/`, which can be pasted into lichess.org/analysis.
+
 ## Baseline engine
 
 ```powershell

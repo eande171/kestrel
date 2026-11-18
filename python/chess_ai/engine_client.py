@@ -78,6 +78,12 @@ class Engine:
             children.append(Child(move, status, int(reps), fen))
         return children
 
+    def parse(self, text: str) -> tuple[str, str] | None:
+        """Returns the UCI and SAN forms of a move typed in either notation, or None if it is not legal."""
+        self._send(f"parse {text}")
+        parts = self._read_until("parsed")[-1].split()
+        return None if parts[1] == "none" else (parts[1], parts[2])
+
     def best_move(self, depth: int) -> str:
         self._send(f"go depth {depth}")
         return self._read_until("bestmove")[-1].split()[1]
