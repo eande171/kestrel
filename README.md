@@ -132,6 +132,14 @@ Without `--search-depth` the network plays its single highest scoring legal move
 
 Shards from the first data format (44 byte records, without repetition and fifty move fields) still load, and older 19 plane checkpoints still evaluate and export.
 
+Strength against Stockfish (unpack a Stockfish release into `tools/stockfish-19/`, which git ignores):
+
+```powershell
+D:\chess-venv\Scripts\python.exe -m chess_ai.stockfish_match --run runs/rep --levels 1500 1700 1900 --games 40 --search-depth 3
+```
+
+This plays the network against Stockfish with its strength capped at each `UCI_Elo` level, saves every game as PGN under `runs/<run>/stockfish/`, and fits one rating across all levels with a 95% range.
+
 ## Licences
 
 The Rust side uses `cozy-chess` (MIT) and `ruzstd` (MIT). The Python side uses PyTorch, NumPy, ONNX and onnxruntime, all permissive. No GPL chess library is used. Lichess game data is CC0. This repository has no licence file yet.
