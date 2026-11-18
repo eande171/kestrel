@@ -8,7 +8,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from chess_ai.encoding import (  # noqa: E402
+from kestrel.encoding import (  # noqa: E402
     PIECE_CHARS,
     POLICY_SIZE,
     NUM_PLANES,
@@ -18,7 +18,7 @@ from chess_ai.encoding import (  # noqa: E402
     legal_indices,
     read_records,
 )
-from chess_ai.engine_client import Engine  # noqa: E402
+from kestrel.engine_client import Engine  # noqa: E402
 
 
 def record_to_fen(rec: np.ndarray) -> str:

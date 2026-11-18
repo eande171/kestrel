@@ -1,4 +1,6 @@
-# chess-ai
+# Kestrel
+
+**K**een-**E**yed **S**earch **T**rained on **R**eal **E**ncounters from **L**ichess.
 
 A neural network chess AI, built mainly as a learning project, with a decent opponent to play against as a bonus.
 
@@ -17,10 +19,10 @@ Milestone 1 (this repository so far):
 
 ```
 engine/          Rust crate: board wrapper, perft tests, baseline engine, UCI loop, PGN to shards pipeline
-python/chess_ai/ encoding, model, training, evaluation matches, ONNX export
+python/kestrel/  encoding, model, training, search, evaluation matches, ONNX export, UCI engine
 python/tests/    encoding consistency check against the Rust engine
 scripts/         train.ps1 (start or resume training), web.ps1 and play.ps1 (play the network)
-web/             browser UI served by python/chess_ai/web.py
+web/             browser UI served by python/kestrel/web.py
 data/            training shards (not committed)
 runs/            checkpoints, logs and exported models (not committed)
 ```
@@ -54,7 +56,7 @@ In the browser:
 
 Click or drag pieces to move. Choose your colour and strength (Instinct plays its first idea, Careful looks 2 moves ahead, Strong looks 3 ahead) and start a new game. Undo, flip, resign and copy PGN are next to the board. Ctrl+C in the terminal stops the server.
 
-The page in `web/` is plain HTML, CSS and JavaScript with no build step. It holds the game itself and asks the server only two things: the legal moves and status for a move list (`POST /api/position`) and chess-ai's reply (`POST /api/move`). The server keeps no game state and only listens on 127.0.0.1. A later in-browser engine can answer the same two questions without the page changing.
+The page in `web/` is plain HTML, CSS and JavaScript with no build step. It holds the game itself and asks the server only two things: the legal moves and status for a move list (`POST /api/position`) and Kestrel's reply (`POST /api/move`). The server keeps no game state and only listens on 127.0.0.1. A later in-browser engine can answer the same two questions without the page changing.
 
 In the terminal:
 
@@ -69,10 +71,10 @@ Type moves in standard notation (`e4`, `Nf3`, `exd5`, `O-O`, `e8=Q`) or as squar
 ## Baseline engine
 
 ```powershell
-.\engine\target\release\chess-ai.exe play --depth 3             # play it in the terminal (SAN or UCI moves)
-.\engine\target\release\chess-ai.exe uci --depth 3              # UCI engine on stdin and stdout
-.\engine\target\release\chess-ai.exe perft 6                    # move generation check
-.\engine\target\release\chess-ai.exe bench --depth 5            # search speed
+.\engine\target\release\kestrel.exe play --depth 3              # play it in the terminal (SAN or UCI moves)
+.\engine\target\release\kestrel.exe uci --depth 3               # UCI engine on stdin and stdout
+.\engine\target\release\kestrel.exe perft 6                     # move generation check
+.\engine\target\release\kestrel.exe bench --depth 5             # search speed
 ```
 
 Material only evaluation, fixed depth alpha-beta, capture-only quiescence search and random tie breaking. It does not know about piece placement, king safety or pawn structure, so it is weak on purpose. Depth 1 to 4 all reply in well under a second.
@@ -87,12 +89,12 @@ Besides standard UCI commands it accepts two extra commands, so Python never nee
 The prep tool streams a Lichess monthly file over HTTP, decompresses it on the fly, filters games and stops once it has enough positions. The full monthly file is around 30 GB but only the part that is read gets downloaded.
 
 ```powershell
-.\engine\target\release\chess-ai.exe prep `
+.\engine\target\release\kestrel.exe prep `
   --input https://database.lichess.org/standard/lichess_db_standard_rated_2026-10.pgn.zst `
   --out data/shards_2026-10_20m_v2 --positions 20000000 --shards 16 --min-elo 1800
 ```
 
-Run `chess-ai.exe` with no arguments for all options (rating threshold, minimum time control, plies skipped, opening position cap and so on). A local `.pgn` or `.pgn.zst` file works too.
+Run `kestrel.exe` with no arguments for all options (rating threshold, minimum time control, plies skipped, opening position cap and so on). A local `.pgn` or `.pgn.zst` file works too.
 
 ## Training
 
@@ -122,9 +124,9 @@ Each run folder contains:
 
 ```powershell
 $env:PYTHONPATH = "python"
-D:\chess-venv\Scripts\python.exe -m chess_ai.evaluate --run runs/rep --depths 1 2 3 4 --games 20
-D:\chess-venv\Scripts\python.exe -m chess_ai.evaluate --run runs/rep --depths 3 4 5 --games 20 --search-depth 2 --width 6
-D:\chess-venv\Scripts\python.exe -m chess_ai.export_onnx --run runs/main
+D:\chess-venv\Scripts\python.exe -m kestrel.evaluate --run runs/rep --depths 1 2 3 4 --games 20
+D:\chess-venv\Scripts\python.exe -m kestrel.evaluate --run runs/rep --depths 3 4 5 --games 20 --search-depth 2 --width 6
+D:\chess-venv\Scripts\python.exe -m kestrel.export_onnx --run runs/main
 D:\chess-venv\Scripts\python.exe python\tests\test_encoding.py data\shards_2026-10_20m_v2\val_000.bin
 ```
 
@@ -135,7 +137,7 @@ Shards from the first data format (44 byte records, without repetition and fifty
 Strength against Stockfish (unpack a Stockfish release into `tools/stockfish-19/`, which git ignores):
 
 ```powershell
-D:\chess-venv\Scripts\python.exe -m chess_ai.stockfish_match --run runs/rep --levels 1500 1700 1900 --games 40 --search-depth 3
+D:\chess-venv\Scripts\python.exe -m kestrel.stockfish_match --run runs/rep --levels 1500 1700 1900 --games 40 --search-depth 3
 ```
 
 This plays the network against Stockfish with its strength capped at each `UCI_Elo` level, saves every game as PGN under `runs/<run>/stockfish/`, and fits one rating across all levels with a 95% range.

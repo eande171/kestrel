@@ -57,7 +57,7 @@ def pgn(sans: list[str], result: str, human_white: bool, label: str) -> str:
         body.append(san)
     body.append(result)
     headers = [
-        '[Event "chess-ai test game"]',
+        '[Event "Kestrel test game"]',
         f'[Date "{time.strftime("%Y.%m.%d")}"]',
         f'[White "{white}"]',
         f'[Black "{black}"]',
@@ -79,7 +79,7 @@ def main(argv=None) -> None:
     model, _ = load_model(Path(args.run) / "checkpoints" / args.checkpoint, device)
     human_white = args.color == "white" or (args.color == "random" and random.random() < 0.5)
     white_bottom = human_white
-    label = f"chess-ai ({'top move' if args.search_depth == 0 else f'search depth {args.search_depth}'})"
+    label = f"Kestrel ({'top move' if args.search_depth == 0 else f'search depth {args.search_depth}'})"
 
     moves: list[str] = []
     sans: list[str] = []
@@ -138,7 +138,7 @@ def main(argv=None) -> None:
                 moves.append(uci)
                 sans.append(san)
                 number = len(sans) // 2 + (len(sans) % 2)
-                print(f"\nchess-ai plays {number}{'.' if not human_white else '...'} {san}  ({time.time() - start:.2f}s)\n")
+                print(f"\nKestrel plays{number}{'.' if not human_white else '...'} {san}  ({time.time() - start:.2f}s)\n")
 
     game_dir = Path(args.run).parent / "games"
     game_dir.mkdir(parents=True, exist_ok=True)

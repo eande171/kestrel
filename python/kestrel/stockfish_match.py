@@ -110,7 +110,7 @@ def main(argv=None) -> None:
     out_dir = run / "stockfish" / label
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"chess-ai ({mode}) vs Stockfish 19, {args.games} games per level, Stockfish {args.movetime} ms per move")
+    print(f"Kestrel ({mode}) vs Stockfish 19, {args.games} games per level, Stockfish {args.movetime} ms per move")
     print("| Stockfish UCI_Elo | games | wins | draws | losses | score | avg plies | net s/move |")
     print("|---|---|---|---|---|---|---|---|")
     rows, fit_rows = [], []
@@ -133,7 +133,7 @@ def main(argv=None) -> None:
             pgns = []
             for g, moves in enumerate(r.move_lists):
                 net_white = g % 2 == 0
-                white, black = ("chess-ai", f"Stockfish {elo}") if net_white else (f"Stockfish {elo}", "chess-ai")
+                white, black = ("Kestrel", f"Stockfish {elo}") if net_white else (f"Stockfish {elo}", "Kestrel")
                 pgns.append(to_pgn(referee, moves, white, black, game_result(moves, referee)))
             (out_dir / f"games_{elo}.pgn").write_text("\n".join(pgns))
 

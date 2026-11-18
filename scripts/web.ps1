@@ -10,6 +10,6 @@ param(
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $env:PYTHONPATH = Join-Path $root "python"
-$webArgs = @("-m", "chess_ai.web", "--run", $Run, "--port", $Port)
+$webArgs = @("-m", "kestrel.web", "--run", $Run, "--port", $Port)
 if (-not $NoOpen) { $webArgs += "--open" }
 & $Python @webArgs

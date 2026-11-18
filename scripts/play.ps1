@@ -10,4 +10,4 @@ param(
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $env:PYTHONPATH = Join-Path $root "python"
-& $Python -m chess_ai.play --run $Run --color $Color --search-depth $Depth
+& $Python -m kestrel.play --run $Run --color $Color --search-depth $Depth

@@ -17,7 +17,7 @@ pub fn run(default_depth: u32, seed: u64) {
         let Some(&command) = tokens.first() else { continue };
         let reply = match command {
             "uci" => format!(
-                "id name chess-ai baseline\nid author chess-ai\n\
+                "id name kestrel baseline\nid author kestrel\n\
                  option name Depth type spin default {default_depth} min 1 max 12\n\
                  option name Seed type spin default {seed} min 0 max 4294967295\n\
                  option name Quiescence type check default true\nuciok"

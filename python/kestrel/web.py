@@ -116,7 +116,7 @@ def main(argv=None) -> None:
     api = ChessApi(Path(args.run), args.checkpoint)
     server = HTTPServer(("127.0.0.1", args.port), make_handler(api))
     url = f"http://localhost:{args.port}/"
-    print(f"chess-ai web UI on {url} (model {api.info['run']} step {api.info['step']}, {api.info['device']}). Ctrl+C to stop.")
+    print(f"Kestrel web UI on {url} (model {api.info['run']} step {api.info['step']}, {api.info['device']}). Ctrl+C to stop.")
     if args.open:
         webbrowser.open(url)
     try:

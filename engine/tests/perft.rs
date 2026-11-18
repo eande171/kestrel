@@ -1,4 +1,4 @@
-use chess_ai::perft;
+use kestrel::perft;
 use cozy_chess::Board;
 
 // Reference Counts

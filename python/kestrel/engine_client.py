@@ -1,10 +1,16 @@
 """Talks to the Rust baseline engine over its UCI style stdin and stdout protocol."""
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_ENGINE = Path(__file__).resolve().parents[2] / "engine" / "target" / "release" / "chess-ai.exe"
+DEFAULT_ENGINE = Path(
+    os.environ.get(
+        "KESTREL_ENGINE",
+        Path(__file__).resolve().parents[2] / "engine" / "target" / "release" / ("kestrel.exe" if os.name == "nt" else "kestrel"),
+    )
+)
 
 
 @dataclass

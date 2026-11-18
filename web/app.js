@@ -36,7 +36,7 @@ const el = id => document.getElementById(id);
 function loadPrefs() {
     const fallback = { color: 'random', depth: '3' };
     try {
-        return { ...fallback, ...JSON.parse(localStorage.getItem('chess-ai-prefs') || '{}') };
+        return { ...fallback, ...JSON.parse(localStorage.getItem('kestrel-prefs') || '{}') };
     } catch {
         return fallback;
     }
@@ -44,7 +44,7 @@ function loadPrefs() {
 
 function savePrefs() {
     try {
-        localStorage.setItem('chess-ai-prefs', JSON.stringify(prefs));
+        localStorage.setItem('kestrel-prefs', JSON.stringify(prefs));
     } catch {
         return;
     }
@@ -134,15 +134,15 @@ function renderBoard() {
 
 function statusText() {
     if (game.error) return { text: game.error, cls: 'loss' };
-    if (game.resigned) return { text: 'You resigned. chess-ai wins.', cls: 'loss' };
+    if (game.resigned) return { text: 'You resigned. Kestrel wins.', cls: 'loss' };
     if (game.status.startsWith('checkmate')) {
         const winner = game.status === 'checkmate_white' ? 'w' : 'b';
         return winner === game.human
             ? { text: 'Checkmate. You win.', cls: 'win' }
-            : { text: 'Checkmate. chess-ai wins.', cls: 'loss' };
+            : { text: 'Checkmate. Kestrel wins.', cls: 'loss' };
     }
     if (ENDINGS[game.status]) return { text: ENDINGS[game.status], cls: '' };
-    if (game.busy) return { text: 'chess-ai is thinking', cls: 'thinking' };
+    if (game.busy) return { text: 'Kestrel is thinking', cls: 'thinking' };
     const inCheck = /[+]$/.test(game.sans[game.sans.length - 1] || '');
     return { text: inCheck ? 'Your move. You are in check.' : 'Your move.', cls: '' };
 }
@@ -151,7 +151,7 @@ function renderStrips() {
     const strength = STRENGTH_NAMES[game.depth] || `Depth ${game.depth}`;
     const strip = color => {
         const human = color === game.human;
-        const name = human ? 'You' : `chess-ai <span class="meta">${strength.toLowerCase()}</span>`;
+        const name = human ? 'You' : `Kestrel <span class="meta">${strength.toLowerCase()}</span>`;
         let meta = color === 'w' ? 'white' : 'black';
         if (!human && game.busy) meta = '<span class="thinking">thinking</span>';
         else if (!human && game.lastThink !== null) meta = `${meta} · ${game.lastThink.toFixed(2)}s`;
@@ -187,7 +187,7 @@ function render() {
     const status = el('status');
     status.textContent = text;
     status.className = `status ${cls === 'thinking' ? '' : cls}`;
-    if (cls === 'thinking') status.innerHTML = '<span class="thinking">chess-ai is thinking</span>';
+    if (cls === 'thinking') status.innerHTML = '<span class="thinking">Kestrel is thinking</span>';
     el('undo').disabled = game.busy || !game.moves.some((_, i) => turnOf(i) === game.human);
     el('resign').disabled = game.busy || isOver() || game.moves.length < 2;
 }
@@ -364,10 +364,10 @@ function pgnText() {
     else if (game.status === 'checkmate_black') result = '0-1';
     else if (game.status !== 'ongoing') result = '1/2-1/2';
     const date = new Date().toISOString().slice(0, 10).replaceAll('-', '.');
-    const ai = `chess-ai (${(STRENGTH_NAMES[game.depth] || game.depth).toString().toLowerCase()})`;
+    const ai = `Kestrel (${(STRENGTH_NAMES[game.depth] || game.depth).toString().toLowerCase()})`;
     const [white, black] = game.human === 'w' ? ['You', ai] : [ai, 'You'];
     const body = game.sans.map((san, i) => (i % 2 === 0 ? `${i / 2 + 1}. ${san}` : san)).join(' ');
-    return `[Event "chess-ai game"]\n[Date "${date}"]\n[White "${white}"]\n[Black "${black}"]\n[Result "${result}"]\n\n${body} ${result}\n`;
+    return `[Event "Kestrel game"]\n[Date "${date}"]\n[White "${white}"]\n[Black "${black}"]\n[Result "${result}"]\n\n${body} ${result}\n`;
 }
 
 async function copyPgn() {

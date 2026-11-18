@@ -3,14 +3,14 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use chess_ai::game::{ascii_board, Game, Outcome};
-use chess_ai::prep::{self, PrepConfig};
-use chess_ai::search::Baseline;
-use chess_ai::{perft, uci};
+use kestrel::game::{ascii_board, Game, Outcome};
+use kestrel::prep::{self, PrepConfig};
+use kestrel::search::Baseline;
+use kestrel::{perft, uci};
 use cozy_chess::{Board, Color};
 
 const USAGE: &str = "\
-usage: chess-ai <command> [options]
+usage: kestrel <command> [options]
 
 commands:
   uci   [--depth N] [--seed N]            run the baseline as a UCI engine on stdin/stdout
