@@ -19,7 +19,7 @@ Milestone 1 (this repository so far):
 engine/          Rust crate: board wrapper, perft tests, baseline engine, UCI loop, PGN to shards pipeline
 python/chess_ai/ encoding, model, training, evaluation matches, ONNX export
 python/tests/    encoding consistency check against the Rust engine
-scripts/         train.ps1 (start or resume training), gpu_power_limit.ps1
+scripts/         train.ps1 (start or resume training)
 data/            training shards (not committed)
 runs/            checkpoints, logs and exported models (not committed)
 ```
@@ -77,7 +77,6 @@ One command starts a run, and the same command resumes it from the latest checkp
 
 - Any `train.py` option can be added after the script options, for example `--max-steps 300000 --eval-every 10000 --patience 5`.
 - `-Quiet` halves the GPU duty cycle and caps the batch at 512 (about 137 W instead of 220 W on the 3070 Ti). `--duty 0.7` gives finer control.
-- For a hard power cap, run `.\scripts\gpu_power_limit.ps1 200` in an Administrator PowerShell. The 3070 Ti accepts 100 to 310 W. The limit resets on reboot, or set it back with `310`.
 - To stop cleanly, create an empty file called `STOP` in the run folder, or press Ctrl+C. Both save a checkpoint first.
 - If Python crashes, the script restarts it after 30 seconds and training resumes from the latest checkpoint.
 
