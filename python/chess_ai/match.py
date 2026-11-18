@@ -1,5 +1,6 @@
 """Plays the network's greedy legal move against the baseline engine."""
 
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -7,6 +8,7 @@ import torch
 
 from .encoding import encode_planes, fen_to_record, legal_indices
 from .engine_client import Engine
+from .search import NetSearch
 
 # Opening Book
 OPENINGS = [
@@ -32,6 +34,7 @@ class MatchResult:
     illegal: int = 0
     plies: list[int] = field(default_factory=list)
     endings: dict[str, int] = field(default_factory=dict)
+    seconds_per_move: float = 0.0
 
     @property
     def games(self) -> int:
@@ -45,21 +48,32 @@ class MatchResult:
 @torch.no_grad()
 def network_move(model: torch.nn.Module, state, device: str) -> str:
     """Returns the highest scoring legal move in UCI form."""
-    rec = torch.from_numpy(fen_to_record(state.fen)[None, :]).to(device)
-    logits, _ = model(encode_planes(rec))
+    rec = torch.from_numpy(fen_to_record(state.fen, state.repetitions)[None, :]).to(device)
+    logits, _ = model(encode_planes(rec, model.in_planes))
     black = state.fen.split()[1] == "b"
     idx = legal_indices(state.legal, black).to(device)
     best = int(torch.argmax(logits[0, idx].float()))
     return state.legal[best]
 
 
-def play_match(model: torch.nn.Module, depth: int, games: int, device: str, max_plies: int = 300, seed: int = 0) -> MatchResult:
+def play_match(
+    model: torch.nn.Module,
+    depth: int,
+    games: int,
+    device: str,
+    max_plies: int = 300,
+    seed: int = 0,
+    search_depth: int = 0,
+    width: int = 6,
+) -> MatchResult:
     """Plays games against the baseline at a fixed depth, alternating colours across a small opening book."""
     was_training = model.training
     model.eval()
     result = MatchResult(depth=depth)
     rng = np.random.default_rng(seed)
     with Engine(depth=depth, seed=int(rng.integers(1, 2**31))) as engine:
+        searcher = NetSearch(model, engine, device, search_depth, width) if search_depth > 0 else None
+        net_moves, net_seconds = 0, 0.0
         for g in range(games):
             engine.set_option("Seed", int(rng.integers(1, 2**31)))
             moves = OPENINGS[(g // 2) % len(OPENINGS)].split()
@@ -71,7 +85,13 @@ def play_match(model: torch.nn.Module, depth: int, games: int, device: str, max_
                     break
                 white_to_move = state.fen.split()[1] == "w"
                 if white_to_move == net_is_white:
-                    mv = network_move(model, state, device)
+                    start = time.time()
+                    if searcher:
+                        mv = searcher.choose(moves, state.fen, state.repetitions)
+                    else:
+                        mv = network_move(model, state, device)
+                    net_seconds += time.time() - start
+                    net_moves += 1
                 else:
                     mv = engine.best_move(depth)
                 if mv not in state.legal:
@@ -89,5 +109,6 @@ def play_match(model: torch.nn.Module, depth: int, games: int, device: str, max_
                     result.losses += 1
             else:
                 result.draws += 1
+        result.seconds_per_move = net_seconds / max(1, net_moves)
     model.train(was_training)
     return result

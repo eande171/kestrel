@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .encoding import NUM_PLANES, POLICY_SIZE
-from .model import ChessNet, count_parameters
+from .encoding import POLICY_SIZE
+from .model import count_parameters, load_model
 
 
 def main(argv=None) -> None:
@@ -18,13 +18,10 @@ def main(argv=None) -> None:
     args = p.parse_args(argv)
 
     run = Path(args.run)
-    ckpt = torch.load(run / "checkpoints" / args.checkpoint, map_location="cpu", weights_only=False)
-    model = ChessNet(**ckpt["model_config"])
-    model.load_state_dict(ckpt["model"])
-    model.eval()
+    model, _ = load_model(run / "checkpoints" / args.checkpoint, "cpu")
 
     out = Path(args.out) if args.out else run / "model.onnx"
-    dummy = torch.zeros(1, NUM_PLANES, 8, 8)
+    dummy = torch.zeros(1, model.in_planes, 8, 8)
     torch.onnx.export(
         model,
         (dummy,),
@@ -43,7 +40,7 @@ def main(argv=None) -> None:
     import onnxruntime as ort
 
     session = ort.InferenceSession(str(out), providers=["CPUExecutionProvider"])
-    x = torch.randint(0, 2, (16, NUM_PLANES, 8, 8)).float()
+    x = torch.randint(0, 2, (16, model.in_planes, 8, 8)).float()
     with torch.no_grad():
         ref_policy, ref_wdl = model(x)
     policy, wdl = session.run(None, {"planes": x.numpy()})

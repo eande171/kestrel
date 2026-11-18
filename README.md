@@ -53,7 +53,10 @@ D:\chess-venv\Scripts\python.exe -m pip install -r python\requirements.txt
 
 Material only evaluation, fixed depth alpha-beta, capture-only quiescence search and random tie breaking. It does not know about piece placement, king safety or pawn structure, so it is weak on purpose. Depth 1 to 4 all reply in well under a second.
 
-Besides standard UCI commands it accepts `state`, which prints the FEN, the game status (including repetition, fifty moves and insufficient material) and the legal moves. The Python match code uses this so Python never needs its own move generator.
+Besides standard UCI commands it accepts two extra commands, so Python never needs its own move generator:
+
+- `state` prints the FEN, the game status (including repetition, fifty moves and insufficient material), how many times the current position has occurred before, and the legal moves.
+- `children` prints one line per legal move with the move, the resulting status, repetition count and FEN. The network search uses this to expand a node in one round trip.
 
 ## Data
 
@@ -62,7 +65,7 @@ The prep tool streams a Lichess monthly file over HTTP, decompresses it on the f
 ```powershell
 .\engine\target\release\chess-ai.exe prep `
   --input https://database.lichess.org/standard/lichess_db_standard_rated_2026-10.pgn.zst `
-  --out data/shards_2026-10_20m --positions 20000000 --shards 16 --min-elo 1800
+  --out data/shards_2026-10_20m_v2 --positions 20000000 --shards 16 --min-elo 1800
 ```
 
 Run `chess-ai.exe` with no arguments for all options (rating threshold, minimum time control, plies skipped, opening position cap and so on). A local `.pgn` or `.pgn.zst` file works too.
@@ -72,7 +75,7 @@ Run `chess-ai.exe` with no arguments for all options (rating threshold, minimum 
 One command starts a run, and the same command resumes it from the latest checkpoint:
 
 ```powershell
-.\scripts\train.ps1 -Run runs/main -Data data/shards_2026-10_20m --max-hours 2
+.\scripts\train.ps1 -Run runs/rep -Data data/shards_2026-10_20m_v2 --max-hours 2
 ```
 
 - Any `train.py` option can be added after the script options, for example `--max-steps 300000 --eval-every 10000 --patience 5`.
@@ -95,12 +98,15 @@ Each run folder contains:
 
 ```powershell
 $env:PYTHONPATH = "python"
-D:\chess-venv\Scripts\python.exe -m chess_ai.evaluate --run runs/main --depths 1 2 3 4 --games 20
+D:\chess-venv\Scripts\python.exe -m chess_ai.evaluate --run runs/rep --depths 1 2 3 4 --games 20
+D:\chess-venv\Scripts\python.exe -m chess_ai.evaluate --run runs/rep --depths 3 4 5 --games 20 --search-depth 2 --width 6
 D:\chess-venv\Scripts\python.exe -m chess_ai.export_onnx --run runs/main
-D:\chess-venv\Scripts\python.exe python\tests\test_encoding.py data\shards_2026-10_20m\val_000.bin
+D:\chess-venv\Scripts\python.exe python\tests\test_encoding.py data\shards_2026-10_20m_v2\val_000.bin
 ```
 
-The network plays its single highest scoring legal move with no search.
+Without `--search-depth` the network plays its single highest scoring legal move. With it, the network looks ahead: at each position it takes its `--width` most likely moves, goes `--search-depth` plies deep, and scores the final positions with its value output. Checkmates and draws (including repetition) found along the way are scored exactly.
+
+Shards from the first data format (44 byte records, without repetition and fifty move fields) still load, and older 19 plane checkpoints still evaluate and export.
 
 ## Licences
 

@@ -5,10 +5,8 @@ import json
 import time
 from pathlib import Path
 
-import torch
-
 from .match import play_match
-from .model import ChessNet
+from .model import load_model
 
 
 def main(argv=None) -> None:
@@ -18,28 +16,31 @@ def main(argv=None) -> None:
     p.add_argument("--depths", type=int, nargs="+", default=[1, 2, 3, 4])
     p.add_argument("--games", type=int, default=20)
     p.add_argument("--seed", type=int, default=12345)
+    p.add_argument("--search-depth", type=int, default=0, help="0 plays the greedy policy move")
+    p.add_argument("--width", type=int, default=6, help="policy moves searched at each node")
     args = p.parse_args(argv)
 
     run = Path(args.run)
-    ckpt = torch.load(run / "checkpoints" / args.checkpoint, map_location="cuda", weights_only=False)
-    model = ChessNet(**ckpt["model_config"]).cuda()
-    model.load_state_dict(ckpt["model"])
-    model.eval()
+    model, ckpt = load_model(run / "checkpoints" / args.checkpoint, "cuda")
+    mode = f"search depth {args.search_depth} width {args.width}" if args.search_depth else "greedy"
 
     rows = []
-    print(f"checkpoint {args.checkpoint} step {ckpt.get('step', ckpt.get('state', {}).get('step'))}")
-    print("| depth | games | wins | draws | losses | score | illegal | avg plies | endings |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print(f"checkpoint {args.checkpoint} step {ckpt.get('step', ckpt.get('state', {}).get('step'))}, {mode}")
+    print("| baseline depth | games | wins | draws | losses | score | illegal | avg plies | s per move | endings |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
     for depth in args.depths:
         start = time.time()
-        r = play_match(model, depth, args.games, "cuda", seed=args.seed + depth)
+        r = play_match(model, depth, args.games, "cuda", seed=args.seed + depth,
+                       search_depth=args.search_depth, width=args.width)
         avg = sum(r.plies) / max(1, len(r.plies))
         endings = ", ".join(f"{k} {v}" for k, v in sorted(r.endings.items()))
-        print(f"| {depth} | {r.games} | {r.wins} | {r.draws} | {r.losses} | {r.score:.2f} | {r.illegal} | {avg:.0f} | {endings} |", flush=True)
+        print(f"| {depth} | {r.games} | {r.wins} | {r.draws} | {r.losses} | {r.score:.2f} | {r.illegal} | "
+              f"{avg:.0f} | {r.seconds_per_move:.3f} | {endings} |", flush=True)
         rows.append({"depth": depth, "games": r.games, "wins": r.wins, "draws": r.draws, "losses": r.losses,
                      "score": r.score, "illegal": r.illegal, "avg_plies": avg, "endings": r.endings,
-                     "seconds": round(time.time() - start, 1)})
-    with open(run / f"match_{Path(args.checkpoint).stem}.json", "w") as f:
+                     "seconds_per_move": r.seconds_per_move, "seconds": round(time.time() - start, 1)})
+    suffix = f"s{args.search_depth}w{args.width}" if args.search_depth else "greedy"
+    with open(run / f"match_{Path(args.checkpoint).stem}_{suffix}.json", "w") as f:
         json.dump(rows, f, indent=2)
 
 

@@ -73,6 +73,11 @@ impl Game {
         legal_moves(&self.board)
     }
 
+    pub fn repetitions(&self) -> usize {
+        let current = self.board.hash();
+        self.hashes.iter().filter(|&&h| h == current).count().saturating_sub(1)
+    }
+
     pub fn uci(&self, mv: Move) -> String {
         display_uci_move(&self.board, mv).to_string()
     }

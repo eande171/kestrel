@@ -1,9 +1,12 @@
 """Position and move encoding shared by training, evaluation and export."""
 
+import json
+from pathlib import Path
+
 import numpy as np
 import torch
 
-RECORD_BYTES = 44
+RECORD_BYTES = 48
 RECORD_DTYPE = np.dtype(
     [
         ("board", "u1", (32,)),
@@ -17,11 +20,15 @@ RECORD_DTYPE = np.dtype(
         ("ply", "u1"),
         ("mover_elo", "<u2"),
         ("opp_elo", "<u2"),
+        ("repetitions", "u1"),
+        ("halfmove", "u1"),
+        ("reserved", "u1", (2,)),
     ]
 )
 assert RECORD_DTYPE.itemsize == RECORD_BYTES
 
-NUM_PLANES = 19
+NUM_PLANES = 21
+LEGACY_PLANES = 19
 POLICY_SIZE = 4096 + 72
 PIECE_CHARS = "PNBRQKpnbrqk"
 PROMO_CODES = {"n": 1, "b": 2, "r": 3, "q": 4}
@@ -29,8 +36,18 @@ PROMO_CODES = {"n": 1, "b": 2, "r": 3, "q": 4}
 _FLIP = torch.arange(64) ^ 56
 
 
-def encode_planes(raw: torch.Tensor) -> torch.Tensor:
-    """Returns float planes of shape (B, 19, 8, 8) from raw uint8 records of shape (B, 44)."""
+def read_records(path: Path) -> np.ndarray:
+    """Returns records from one shard as uint8 rows of RECORD_BYTES, padding older 44 byte shards."""
+    meta = Path(path).parent / "meta.json"
+    width = json.loads(meta.read_text()).get("record_bytes", 44) if meta.exists() else RECORD_BYTES
+    rows = np.fromfile(path, dtype=np.uint8).reshape(-1, width)
+    if width < RECORD_BYTES:
+        rows = np.pad(rows, ((0, 0), (0, RECORD_BYTES - width)))
+    return rows
+
+
+def encode_planes(raw: torch.Tensor, num_planes: int = NUM_PLANES) -> torch.Tensor:
+    """Returns float planes of shape (B, num_planes, 8, 8) from raw uint8 records of shape (B, 48)."""
     device = raw.device
     b = raw.shape[0]
     packed = raw[:, :32].long()
@@ -59,10 +76,16 @@ def encode_planes(raw: torch.Tensor) -> torch.Tensor:
     stm_plane = black.float()[:, None].expand(b, 64)
     ones = torch.ones(b, 64, device=device)
 
+    # History Planes
+    repeated = (raw[:, 44] >= 1).float()[:, None].expand(b, 64)
+    halfmove = (raw[:, 45].float() / 100.0).clamp(max=1.0)[:, None].expand(b, 64)
+
     planes = torch.cat(
-        [pieces, castle_planes, ep_plane[:, None], stm_plane[:, None], ones[:, None]], dim=1
+        [pieces, castle_planes, ep_plane[:, None], stm_plane[:, None], ones[:, None],
+         repeated[:, None], halfmove[:, None]],
+        dim=1,
     )
-    return planes.reshape(b, NUM_PLANES, 8, 8)
+    return planes[:, :num_planes].reshape(b, num_planes, 8, 8)
 
 
 def policy_index(from_sq: torch.Tensor, to_sq: torch.Tensor, promo: torch.Tensor, black: torch.Tensor) -> torch.Tensor:
@@ -85,8 +108,8 @@ def encode_targets(raw: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return idx, raw[:, 35].long()
 
 
-def fen_to_record(fen: str) -> np.ndarray:
-    """Returns a 44 byte record for a FEN with an empty move and result."""
+def fen_to_record(fen: str, repetitions: int = 0) -> np.ndarray:
+    """Returns a record for a FEN and repetition count with an empty move and result."""
     parts = fen.split()
     codes = np.zeros(64, dtype=np.uint8)
     for rank_idx, row in enumerate(parts[0].split("/")):
@@ -105,6 +128,8 @@ def fen_to_record(fen: str) -> np.ndarray:
     rec[33] = sum(bit for ch, bit in (("K", 1), ("Q", 2), ("k", 4), ("q", 8)) if ch in castling)
     ep = parts[3] if len(parts) > 3 else "-"
     rec[34] = 255 if ep == "-" else ord(ep[0]) - ord("a")
+    rec[44] = min(repetitions, 2)
+    rec[45] = min(int(parts[4]), 255) if len(parts) > 4 else 0
     return rec
 
 

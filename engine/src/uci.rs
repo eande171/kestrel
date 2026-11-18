@@ -60,11 +60,29 @@ pub fn run(default_depth: u32, seed: u64) {
             "state" => {
                 let legal: Vec<String> = game.legal_moves().into_iter().map(|m| game.uci(m)).collect();
                 format!(
-                    "fen {}\nstatus {}\nlegal {}\nendstate",
+                    "fen {}\nstatus {}\nrepetitions {}\nlegal {}\nendstate",
                     game.board,
                     game.outcome().name(),
+                    game.repetitions(),
                     legal.join(" ")
                 )
+            }
+            "children" => {
+                let mut lines = Vec::new();
+                for mv in game.legal_moves() {
+                    let mut child = game.clone();
+                    let uci = game.uci(mv);
+                    if child.play(mv).is_ok() {
+                        lines.push(format!(
+                            "child {uci} {} {} {}",
+                            child.outcome().name(),
+                            child.repetitions(),
+                            child.board
+                        ));
+                    }
+                }
+                lines.push("endchildren".to_string());
+                lines.join("\n")
             }
             "d" => format!("{}fen {}", ascii_board(&game.board), game.board),
             "quit" => break,

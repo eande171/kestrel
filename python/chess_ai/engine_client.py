@@ -12,6 +12,15 @@ class State:
     fen: str
     status: str
     legal: list[str]
+    repetitions: int = 0
+
+
+@dataclass
+class Child:
+    move: str
+    status: str
+    repetitions: int
+    fen: str
 
 
 class Engine:
@@ -57,7 +66,17 @@ class Engine:
             fields[key] = rest
         if "fen" not in fields:
             raise RuntimeError(f"engine error: {lines}")
-        return State(fields["fen"], fields["status"], fields.get("legal", "").split())
+        return State(
+            fields["fen"], fields["status"], fields.get("legal", "").split(), int(fields.get("repetitions", 0))
+        )
+
+    def children(self) -> list[Child]:
+        self._send("children")
+        children = []
+        for line in self._read_until("endchildren")[:-1]:
+            _, move, status, reps, fen = line.split(" ", 4)
+            children.append(Child(move, status, int(reps), fen))
+        return children
 
     def best_move(self, depth: int) -> str:
         self._send(f"go depth {depth}")

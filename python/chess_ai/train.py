@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .encoding import RECORD_BYTES, encode_planes, encode_targets
+from .encoding import LEGACY_PLANES, encode_planes, encode_targets, read_records
 from .match import play_match
 from .model import ChessNet, count_parameters
 
@@ -107,8 +107,7 @@ def load_shards(data_dir: Path, prefix: str) -> np.ndarray:
     files = sorted(data_dir.glob(f"{prefix}_*.bin"))
     if not files:
         raise SystemExit(f"no {prefix} shards in {data_dir}")
-    arrays = [np.fromfile(f, dtype=np.uint8).reshape(-1, RECORD_BYTES) for f in files]
-    return np.concatenate(arrays)
+    return np.concatenate([read_records(f) for f in files])
 
 
 def lr_at(step: int, args) -> float:
@@ -119,7 +118,7 @@ def lr_at(step: int, args) -> float:
 
 
 def losses(model, raw, value_weight):
-    planes = encode_planes(raw)
+    planes = encode_planes(raw, model.in_planes)
     target_idx, target_wdl = encode_targets(raw)
     with torch.autocast("cuda", dtype=torch.bfloat16):
         policy, value = model(planes)
@@ -205,7 +204,7 @@ def main(argv=None) -> int:
 
     if latest_path.exists():
         ckpt = torch.load(latest_path, map_location=device, weights_only=False)
-        if ckpt["model_config"] != model.config:
+        if {"in_planes": LEGACY_PLANES, **ckpt["model_config"]} != model.config:
             raise SystemExit(f"checkpoint model config {ckpt['model_config']} differs from {model.config}")
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])

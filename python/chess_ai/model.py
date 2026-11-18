@@ -5,7 +5,7 @@ import math
 import torch
 from torch import nn
 
-from .encoding import NUM_PLANES
+from .encoding import LEGACY_PLANES, NUM_PLANES
 
 
 class ResBlock(nn.Module):
@@ -37,11 +37,12 @@ def _underpromotion_gather() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 class ChessNet(nn.Module):
     """Residual conv trunk with a query key policy head and a WDL value head."""
 
-    def __init__(self, blocks: int = 6, channels: int = 64, key_dim: int = 32):
+    def __init__(self, blocks: int = 6, channels: int = 64, key_dim: int = 32, in_planes: int = NUM_PLANES):
         super().__init__()
-        self.config = {"blocks": blocks, "channels": channels, "key_dim": key_dim}
+        self.config = {"blocks": blocks, "channels": channels, "key_dim": key_dim, "in_planes": in_planes}
+        self.in_planes = in_planes
         self.stem = nn.Sequential(
-            nn.Conv2d(NUM_PLANES, channels, 3, padding=1, bias=False),
+            nn.Conv2d(in_planes, channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(channels),
             nn.ReLU(inplace=True),
         )
@@ -98,3 +99,13 @@ class ChessNet(nn.Module):
 
 def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
+
+
+def load_model(path, device: str = "cpu") -> tuple[ChessNet, dict]:
+    """Returns an eval mode model and the raw checkpoint, treating older configs as 19 input planes."""
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    config = {"in_planes": LEGACY_PLANES, **ckpt["model_config"]}
+    model = ChessNet(**config).to(device)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+    return model, ckpt

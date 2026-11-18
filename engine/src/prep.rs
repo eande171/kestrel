@@ -11,7 +11,8 @@ use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
 
 use crate::game::parse_san;
 
-pub const RECORD_BYTES: usize = 44;
+pub const RECORD_BYTES: usize = 48;
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct PrepConfig {
@@ -206,7 +207,7 @@ pub fn run(cfg: &PrepConfig) -> io::Result<()> {
             if let Some(game) = filter_and_parse(cfg, &headers, &movetext, &mut stats) {
                 stats.games_kept += 1;
                 let to_val = cfg.val_every > 0 && stats.games_kept % cfg.val_every == 0;
-                for (ply, (board, mv)) in game.positions.iter().enumerate() {
+                for (ply, (board, mv, repetitions)) in game.positions.iter().enumerate() {
                     let ply = ply as u32;
                     if ply < cfg.skip_plies {
                         continue;
@@ -219,7 +220,7 @@ pub fn run(cfg: &PrepConfig) -> io::Result<()> {
                             continue;
                         }
                     }
-                    let record = encode_record(board, *mv, game.white_result, ply, game.white_elo, game.black_elo);
+                    let record = encode_record(board, *mv, *repetitions, game.white_result, ply, game.white_elo, game.black_elo);
                     if to_val {
                         val.write_all(&record)?;
                         stats.positions_val += 1;
@@ -277,7 +278,8 @@ fn report(stats: &Stats, start: Instant) {
 
 fn write_meta(cfg: &PrepConfig, s: &Stats, seconds: f64) -> io::Result<()> {
     let json = format!(
-        "{{\n  \"input\": \"{}\",\n  \"record_bytes\": {RECORD_BYTES},\n  \"min_elo\": {},\n  \"min_seconds\": {},\n  \
+        "{{\n  \"input\": \"{}\",\n  \"format_version\": {FORMAT_VERSION},\n  \"record_bytes\": {RECORD_BYTES},\n  \
+         \"min_elo\": {},\n  \"min_seconds\": {},\n  \
          \"min_plies\": {},\n  \"skip_plies\": {},\n  \"common_plies\": {},\n  \"common_cap\": {},\n  \
          \"val_every\": {},\n  \"shards\": {},\n  \"games_read\": {},\n  \"games_kept\": {},\n  \
          \"rejected_rating\": {},\n  \"rejected_speed\": {},\n  \"rejected_termination\": {},\n  \
@@ -323,7 +325,7 @@ fn parse_header(line: &str, h: &mut Headers) {
 }
 
 struct ParsedGame {
-    positions: Vec<(Board, Move)>,
+    positions: Vec<(Board, Move, u8)>,
     white_result: u8,
     white_elo: u16,
     black_elo: u16,
@@ -367,11 +369,18 @@ fn filter_and_parse(cfg: &PrepConfig, h: &Headers, movetext: &str, stats: &mut S
 
     let mut board = Board::default();
     let mut positions = Vec::with_capacity(128);
+    let mut history: Vec<u64> = Vec::with_capacity(128);
     for token in san_tokens(movetext) {
         match parse_san(&board, token) {
             Ok(mv) => {
-                positions.push((board.clone(), mv));
+                let hash = board.hash();
+                let repetitions = history.iter().filter(|&&h| h == hash).count().min(2) as u8;
+                history.push(hash);
+                positions.push((board.clone(), mv, repetitions));
                 board.play_unchecked(mv);
+                if board.halfmove_clock() == 0 {
+                    history.clear();
+                }
             }
             Err(_) => {
                 stats.rejected_parse += 1;
@@ -446,7 +455,15 @@ pub fn standard_move(board: &Board, mv: Move) -> Move {
 }
 
 // Record Layout
-pub fn encode_record(board: &Board, mv: Move, white_result: u8, ply: u32, white_elo: u16, black_elo: u16) -> [u8; RECORD_BYTES] {
+pub fn encode_record(
+    board: &Board,
+    mv: Move,
+    repetitions: u8,
+    white_result: u8,
+    ply: u32,
+    white_elo: u16,
+    black_elo: u16,
+) -> [u8; RECORD_BYTES] {
     let mut r = [0u8; RECORD_BYTES];
     for i in 0..32 {
         let lo = piece_code(board, Square::index(2 * i));
@@ -468,6 +485,8 @@ pub fn encode_record(board: &Board, mv: Move, white_result: u8, ply: u32, white_
     let (mover, other) = if stm == Color::White { (white_elo, black_elo) } else { (black_elo, white_elo) };
     r[40..42].copy_from_slice(&mover.to_le_bytes());
     r[42..44].copy_from_slice(&other.to_le_bytes());
+    r[44] = repetitions;
+    r[45] = board.halfmove_clock();
     r
 }
 
@@ -486,10 +505,26 @@ mod tests {
     fn castling_is_stored_as_king_two_squares() {
         let board = Board::from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", false).unwrap();
         let mv = parse_san(&board, "O-O").unwrap();
-        let r = encode_record(&board, mv, 1, 0, 2000, 2000);
+        let r = encode_record(&board, mv, 0, 1, 0, 2000, 2000);
         assert_eq!(r[36], Square::E1 as u8);
         assert_eq!(r[37], Square::G1 as u8);
         assert_eq!(r[33], 15);
+    }
+
+    #[test]
+    fn repetitions_are_counted_within_a_game() {
+        let cfg = PrepConfig { min_elo: 0, min_plies: 0, ..PrepConfig::default() };
+        let headers = Headers {
+            white_elo: Some(2000),
+            black_elo: Some(2000),
+            result: Some("1/2-1/2".to_string()),
+            time_control: Some("600+0".to_string()),
+            termination: Some("Normal".to_string()),
+        };
+        let text = "1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8 5. e4 1/2-1/2";
+        let game = filter_and_parse(&cfg, &headers, text, &mut Stats::default()).unwrap();
+        let reps: Vec<u8> = game.positions.iter().map(|p| p.2).collect();
+        assert_eq!(reps, vec![0, 0, 0, 0, 1, 1, 1, 1, 2]);
     }
 
     #[test]
