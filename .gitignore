@@ -1,0 +1,23 @@
+# Rust
+engine/target/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Data, checkpoints, logs and exported models
+data/
+runs/
+checkpoints/
+logs/
+*.bin
+*.pgn
+*.pgn.zst
+*.zst
+*.pt
+*.onnx
+*.onnx.data
+*.log
+*.csv

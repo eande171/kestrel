@@ -1,0 +1,17 @@
+[package]
+name = "chess-ai"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+cozy-chess = "0.3.4"
+ruzstd = "0.9.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.test]
+opt-level = 3
