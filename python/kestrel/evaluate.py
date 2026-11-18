@@ -5,6 +5,7 @@ import json
 import time
 from pathlib import Path
 
+from .inference import TorchEvaluator
 from .match import play_match
 from .model import load_model
 
@@ -30,7 +31,7 @@ def main(argv=None) -> None:
     print("|---|---|---|---|---|---|---|---|---|---|")
     for depth in args.depths:
         start = time.time()
-        r = play_match(model, depth, args.games, "cuda", seed=args.seed + depth,
+        r = play_match(TorchEvaluator(model, "cuda"), depth, args.games, seed=args.seed + depth,
                        search_depth=args.search_depth, width=args.width)
         avg = sum(r.plies) / max(1, len(r.plies))
         endings = ", ".join(f"{k} {v}" for k, v in sorted(r.endings.items()))

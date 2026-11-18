@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 
 from .engine_client import Engine
-from .match import network_move
+from .inference import TorchEvaluator, greedy_move
 from .model import count_parameters, load_model
 from .search import NetSearch
 
@@ -23,6 +23,7 @@ class ChessApi:
     def __init__(self, run: Path, checkpoint: str):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, ckpt = load_model(run / "checkpoints" / checkpoint, self.device)
+        self.evaluator = TorchEvaluator(self.model, self.device)
         self.engine = Engine()
         self.info = {
             "run": run.name,
@@ -52,9 +53,9 @@ class ChessApi:
             raise ValueError("game is over")
         start = time.time()
         if depth == 0:
-            uci = network_move(self.model, state, self.device)
+            uci = greedy_move(self.evaluator, state.fen, state.repetitions, state.legal)
         else:
-            uci = NetSearch(self.model, self.engine, self.device, depth, width).choose(
+            uci = NetSearch(self.evaluator, self.engine, depth, width).choose(
                 moves, state.fen, state.repetitions
             )
         self.engine.position(moves)

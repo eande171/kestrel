@@ -16,6 +16,7 @@ import torch
 import torch.nn.functional as F
 
 from .encoding import LEGACY_PLANES, encode_planes, encode_targets, read_records
+from .inference import TorchEvaluator
 from .match import play_match
 from .model import ChessNet, count_parameters
 
@@ -319,7 +320,9 @@ def main(argv=None) -> int:
 
             if state["step"] % args.eval_every == 0:
                 metrics = evaluate_heldout(model, val, args.value_weight)
-                match = play_match(model, args.match_depth, args.match_games, device, seed=state["step"])
+                model.eval()
+                match = play_match(TorchEvaluator(model, device), args.match_depth, args.match_games, seed=state["step"])
+                model.train()
                 is_best = metrics["loss"] < state["best_val"] - 1e-4
                 if is_best:
                     state["best_val"] = metrics["loss"]

@@ -1,14 +1,13 @@
-"""Plays the network's greedy legal move against the baseline engine."""
+"""Plays the network against the baseline engine or another opponent."""
 
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
-import torch
 
-from .encoding import encode_planes, fen_to_record, legal_indices
 from .engine_client import Engine
+from .inference import greedy_move
 from .search import NetSearch
 
 # Opening Book
@@ -47,22 +46,10 @@ class MatchResult:
         return (self.wins + 0.5 * self.draws) / max(1, self.games)
 
 
-@torch.no_grad()
-def network_move(model: torch.nn.Module, state, device: str) -> str:
-    """Returns the highest scoring legal move in UCI form."""
-    rec = torch.from_numpy(fen_to_record(state.fen, state.repetitions)[None, :]).to(device)
-    logits, _ = model(encode_planes(rec, model.in_planes))
-    black = state.fen.split()[1] == "b"
-    idx = legal_indices(state.legal, black).to(device)
-    best = int(torch.argmax(logits[0, idx].float()))
-    return state.legal[best]
-
-
 def play_match(
-    model: torch.nn.Module,
+    evaluator,
     depth: int,
     games: int,
-    device: str,
     max_plies: int = 300,
     seed: int = 0,
     search_depth: int = 0,
@@ -71,12 +58,10 @@ def play_match(
     on_game: Callable[[int, MatchResult], None] | None = None,
 ) -> MatchResult:
     """Plays games against the baseline at a fixed depth, or another opponent, alternating colours over an opening book."""
-    was_training = model.training
-    model.eval()
     result = MatchResult(depth=depth)
     rng = np.random.default_rng(seed)
     with Engine(depth=depth, seed=int(rng.integers(1, 2**31))) as engine:
-        searcher = NetSearch(model, engine, device, search_depth, width) if search_depth > 0 else None
+        searcher = NetSearch(evaluator, engine, search_depth, width) if search_depth > 0 else None
         net_moves, net_seconds = 0, 0.0
         for g in range(games):
             engine.set_option("Seed", int(rng.integers(1, 2**31)))
@@ -93,7 +78,7 @@ def play_match(
                     if searcher:
                         mv = searcher.choose(moves, state.fen, state.repetitions)
                     else:
-                        mv = network_move(model, state, device)
+                        mv = greedy_move(evaluator, state.fen, state.repetitions, state.legal)
                     net_seconds += time.time() - start
                     net_moves += 1
                 elif opponent:
@@ -119,5 +104,4 @@ def play_match(
             if on_game:
                 on_game(g, result)
         result.seconds_per_move = net_seconds / max(1, net_moves)
-    model.train(was_training)
     return result

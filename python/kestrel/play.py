@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 
 from .engine_client import Engine
-from .match import network_move
+from .inference import TorchEvaluator, greedy_move
 from .model import load_model
 from .search import NetSearch
 
@@ -86,7 +86,8 @@ def main(argv=None) -> None:
     result = "*"
     print(f"\nYou are {'White' if human_white else 'Black'} against {label}. {HELP}\n")
     with Engine() as engine:
-        searcher = NetSearch(model, engine, device, args.search_depth, args.width) if args.search_depth else None
+        evaluator = TorchEvaluator(model, device)
+        searcher = NetSearch(evaluator, engine, args.search_depth, args.width) if args.search_depth else None
         while True:
             engine.position(moves)
             state = engine.state()
@@ -133,7 +134,7 @@ def main(argv=None) -> None:
                     uci = searcher.choose(moves, state.fen, state.repetitions)
                     engine.position(moves)
                 else:
-                    uci = network_move(model, state, device)
+                    uci = greedy_move(evaluator, state.fen, state.repetitions, state.legal)
                 _, san = engine.parse(uci)
                 moves.append(uci)
                 sans.append(san)

@@ -68,6 +68,21 @@ In the terminal:
 
 Type moves in standard notation (`e4`, `Nf3`, `exd5`, `O-O`, `e8=Q`) or as squares (`e2e4`). Pieces need capital letters. Other commands are `undo`, `flip`, `moves`, `resign` and `help`. The last move is shown in brackets on the board, uppercase letters are White and lowercase are Black. Each game is saved as a PGN file in `runs/games/`, which can be pasted into lichess.org/analysis.
 
+## Kestrel as a UCI engine
+
+`python -m kestrel.uci` runs Kestrel (network plus search) as a standard UCI engine, so any chess GUI or bot bridge can use it. It runs on the CPU with ONNX Runtime and does not need PyTorch or a GPU.
+
+```powershell
+$env:PYTHONPATH = "python"
+D:\chess-venv\Scripts\python.exe -m kestrel.uci --model runs/rep/model.onnx --threads 2
+```
+
+- Needs `numpy`, `onnxruntime`, an exported model and the Rust `kestrel` binary (found next to the repo, or set `KESTREL_ENGINE`). `KESTREL_MODEL` and `KESTREL_THREADS` set the defaults.
+- UCI options: `Depth` (0 to 4, default 3), `Width` (moves searched at each step, default 6) and `Randomness` (in thousandths; root moves this close to the best are picked at random, default 10, so it does not repeat the same game).
+- Time management: from `wtime`/`btime`/`winc`/`binc` it allows about a thirtieth of the remaining time plus most of the increment, and drops to a shallower search when a deeper one would not fit. It learns how long each depth takes as it plays.
+
+Speed on an i7-12700KF with 2 threads: depth 3 takes about 0.1 s per move and depth 4 about 0.6 s. ONNX and PyTorch choose the same move on 100% of 5,000 test positions (`python/tests/test_features.py`).
+
 ## Baseline engine
 
 ```powershell

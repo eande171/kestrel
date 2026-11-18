@@ -8,8 +8,8 @@ import time
 from pathlib import Path
 
 from .engine_client import Engine
+from .inference import OnnxEvaluator, TorchEvaluator
 from .match import MatchResult, play_match
-from .model import load_model
 
 DEFAULT_STOCKFISH = Path(__file__).resolve().parents[2] / "tools" / "stockfish-19" / "stockfish" / "stockfish-windows-x86-64-universal.exe"
 
@@ -101,11 +101,20 @@ def main(argv=None) -> None:
     p.add_argument("--movetime", type=int, default=200, help="Stockfish milliseconds per move")
     p.add_argument("--stockfish", type=Path, default=DEFAULT_STOCKFISH)
     p.add_argument("--label", default=None)
+    p.add_argument("--onnx", type=Path, default=None, help="use this ONNX model on the CPU instead of the PyTorch checkpoint")
+    p.add_argument("--threads", type=int, default=None, help="ONNX Runtime threads")
     args = p.parse_args(argv)
 
     run = Path(args.run)
-    model, ckpt = load_model(run / "checkpoints" / args.checkpoint, "cuda")
+    if args.onnx:
+        evaluator, step = OnnxEvaluator(args.onnx, args.threads), None
+    else:
+        from .model import load_model
+
+        model, ckpt = load_model(run / "checkpoints" / args.checkpoint, "cuda")
+        evaluator, step = TorchEvaluator(model, "cuda"), ckpt.get("step")
     mode = f"search depth {args.search_depth}" if args.search_depth else "top move only"
+    mode += f", {evaluator.description}"
     label = args.label or (f"s{args.search_depth}" if args.search_depth else "greedy")
     out_dir = run / "stockfish" / label
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +128,7 @@ def main(argv=None) -> None:
             sf = Stockfish(args.stockfish, elo, args.movetime)
             start = time.time()
             r: MatchResult = play_match(
-                model, 0, args.games, "cuda", seed=elo, search_depth=args.search_depth, width=args.width,
+                evaluator, 0, args.games, seed=elo, search_depth=args.search_depth, width=args.width,
                 opponent=sf.move, on_game=lambda g, res: sf.new_game(),
             )
             sf.close()
@@ -141,7 +150,7 @@ def main(argv=None) -> None:
     print(f"\nEstimated rating on Stockfish's UCI_Elo scale: {best} (95% range {low} to {high})")
     with open(out_dir / "results.json", "w") as f:
         json.dump({"mode": mode, "movetime_ms": args.movetime, "levels": rows,
-                   "estimate": best, "range": [low, high], "step": ckpt.get("step")}, f, indent=2)
+                   "estimate": best, "range": [low, high], "step": step}, f, indent=2)
 
 
 if __name__ == "__main__":
