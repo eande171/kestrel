@@ -108,13 +108,22 @@ def keep_awake(enable: bool) -> None:
         ctypes.windll.kernel32.SetThreadExecutionState(flags)
 
 
-def load_shards(data_dirs: list[Path], prefix: str) -> np.ndarray:
-    """Returns every shard with the prefix from all data folders as one array, read into place without a second copy."""
+def shard_files(data_dirs: list[Path], prefix: str) -> list[Path]:
     files = [f for d in data_dirs for f in sorted(d.glob(f"{prefix}_*.bin"))]
     if not files:
         raise SystemExit(f"no {prefix} shards in {', '.join(map(str, data_dirs))}")
-    rows = sum(f.stat().st_size // record_width(f.parent) for f in files)
-    out = np.empty((rows, RECORD_BYTES), dtype=np.uint8)
+    return files
+
+
+def shard_rows(files: list[Path]) -> int:
+    return sum(f.stat().st_size // record_width(f.parent) for f in files)
+
+
+def load_shards(data_dirs: list[Path], prefix: str, out: np.ndarray | None = None) -> np.ndarray:
+    """Returns every shard with the prefix from all data folders as one array, read into out when given."""
+    files = shard_files(data_dirs, prefix)
+    if out is None:
+        out = np.empty((shard_rows(files), RECORD_BYTES), dtype=np.uint8)
     total = 0
     for f in files:
         part = read_records(f)
@@ -262,12 +271,13 @@ def main(argv=None) -> int:
         json.dump({**vars(args), "model_config": model.config, "parameters": count_parameters(model)}, f, indent=2)
 
     data_dirs = [Path(d) for d in args.data]
-    train_np = load_shards(data_dirs, "train")
-    counts = piece_counts(train_np)
-    on_gpu = train_np.nbytes <= args.gpu_data_gb * 1e9
-    train = torch.from_numpy(train_np)
-    train = train.to(device) if on_gpu else train.pin_memory()
-    del train_np
+    rows = shard_rows(shard_files(data_dirs, "train"))
+    on_gpu = rows * RECORD_BYTES <= args.gpu_data_gb * 1e9
+    train = torch.empty((rows, RECORD_BYTES), dtype=torch.uint8, pin_memory=not on_gpu)
+    load_shards(data_dirs, "train", out=train.numpy())
+    counts = piece_counts(train.numpy())
+    if on_gpu:
+        train = train.to(device)
     val = torch.from_numpy(load_shards(data_dirs, "val")).to(device)
     endgames = int((counts <= args.endgame_pieces).sum())
     log_event(
