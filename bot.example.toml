@@ -1,0 +1,33 @@
+# Lichess Connection
+[lichess]
+token_file = "token.txt"
+base_url = "https://lichess.org"
+
+# Engine Settings
+[engine]
+model = "model.onnx"
+threads = 2
+max_depth = 4
+width = 6
+randomness = 10
+reserve_seconds = 1.0
+
+# Challenge Rules
+[challenges]
+max_games = 1
+variants = ["standard"]
+speeds = ["blitz", "rapid", "classical"]
+min_initial_seconds = 60
+max_initial_seconds = 3600
+min_increment_seconds = 0
+accept_rated = true
+accept_casual = true
+accept_bots = true
+accept_humans = true
+allow_users = []
+block_users = []
+
+# Chat Messages
+[chat]
+greeting = "Hi, I'm Kestrel, a small neural network. Good luck!"
+goodbye = "Thanks for the game!"

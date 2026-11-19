@@ -83,6 +83,51 @@ D:\chess-venv\Scripts\python.exe -m kestrel.uci --model runs/rep/model.onnx --th
 
 Speed on an i7-12700KF with 2 threads: depth 3 takes about 0.1 s per move and depth 4 about 0.6 s. ONNX and PyTorch choose the same move on 100% of 5,000 test positions (`python/tests/test_features.py`).
 
+## Lichess bot
+
+`python -m kestrel.lichess_bot` plays Kestrel on Lichess through the Bot API. It uses only the Python standard library plus the same `numpy` and `onnxruntime` as the UCI engine, and reads all settings from a TOML file that can live anywhere, so the token never sits in the repo.
+
+### One time setup
+
+1. Create a new Lichess account for the bot. It must never play a game before the upgrade.
+2. Signed in as the bot, create an API token with the "Play games with the bot API" (`bot:play`) scope at lichess.org/account/oauth/token/create. Save it in a text file on its own, for example `C:\Users\<you>\.kestrel\token.txt`.
+3. Upgrade the account to a bot. **This cannot be undone**, and the account can only ever play as a bot afterwards:
+   ```powershell
+   curl.exe -d '' https://lichess.org/api/bot/account/upgrade -H "Authorization: Bearer <token>"
+   ```
+4. Copy `bot.example.toml` to a folder of your choice, next to the token file, along with the exported `model.onnx`.
+
+### Config file
+
+The bot looks for the config in this order: `--config <path>`, the `KESTREL_BOT_CONFIG` environment variable, then `%APPDATA%\kestrel\bot.toml` on Windows or `~/.config/kestrel/bot.toml` on Linux. Relative paths inside it are resolved from the config file's own folder.
+
+| Section | Setting | Meaning |
+|---|---|---|
+| `lichess` | `token_file` | file holding only the token. `LICHESS_BOT_TOKEN` in the environment overrides it |
+| `lichess` | `base_url` | `https://lichess.org` |
+| `engine` | `model`, `threads` | ONNX model and CPU threads |
+| `engine` | `max_depth`, `width` | deepest search (4 is about 1975 on the Stockfish scale) and moves searched at each step |
+| `engine` | `randomness` | thousandths of a point; root moves this close to the best are picked at random |
+| `engine` | `reserve_seconds` | seconds kept back from the clock for network lag |
+| `challenges` | `speeds`, `variants` | any of `ultraBullet`, `bullet`, `blitz`, `rapid`, `classical`, `correspondence`; variants by Lichess key |
+| `challenges` | `min_initial_seconds`, `max_initial_seconds`, `min_increment_seconds` | clock limits |
+| `challenges` | `accept_rated`, `accept_casual`, `accept_bots`, `accept_humans`, `max_games` | who and how many |
+| `challenges` | `allow_users`, `block_users` | if `allow_users` is not empty, only those usernames may challenge it. Use this with your own username while testing |
+| `chat` | `greeting`, `goodbye` | messages sent to the opponent at the start and end of a game, empty to stay quiet |
+
+Declined challenges get the matching Lichess reason (`variant`, `tooFast`, `tooSlow`, `timeControl`, `noBot`, `onlyBot`, `rated`, `casual`, `later`).
+
+### Running
+
+```powershell
+$env:PYTHONPATH = "python"
+D:\chess-venv\Scripts\python.exe -m kestrel.lichess_bot --config C:\Users\<you>\.kestrel\bot.toml
+```
+
+It checks that the account has the BOT title, then listens for challenges. Games in progress are picked up again after a restart, and dropped connections reconnect on their own. Ctrl+C stops it.
+
+`python/tests/test_lichess_bot.py` runs the whole bot against a local mock of the Lichess API (challenges declined and accepted, a full game, chat, and a check that the token is never logged), so it can be tested without an account.
+
 ## Baseline engine
 
 ```powershell

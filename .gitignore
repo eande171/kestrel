@@ -11,6 +11,10 @@ venv/
 .claude/
 tools/
 
+# Bot Secrets
+bot.toml
+token*.txt
+
 # Local Notes
 NOTES.md
 REPORT.md
