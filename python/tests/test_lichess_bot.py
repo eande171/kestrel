@@ -53,6 +53,7 @@ class MockLichess:
         self.finished = threading.Event()
         self.matchmade = threading.Event()
         self.sent_challenges: list[tuple[str, dict]] = []
+        self.cancelled: list[str] = []
         self.engine = Engine(depth=1, seed=3)
         self.lock = threading.Lock()
         for event in (
@@ -181,6 +182,9 @@ def make_handler(mock: MockLichess):
                 mock.sent_challenges.append((parts[2], form))
                 mock.matchmade.set()
                 return self.json_reply({"id": "out1", "status": "created", "direction": "out"})
+            if parts[:2] == ["api", "challenge"] and parts[3] == "cancel":
+                mock.cancelled.append(parts[2])
+                return self.json_reply({"ok": True})
             if parts[:2] == ["api", "challenge"] and parts[3] == "decline":
                 mock.declined[parts[2]] = form.get("reason", "")
                 return self.json_reply({"ok": True})
@@ -229,7 +233,9 @@ def main() -> None:
     threading.Thread(target=lambda: output.extend(bot.stdout), daemon=True).start()
     finished = mock.finished.wait(timeout=300)
     matchmade = mock.matchmade.wait(timeout=15)
-    time.sleep(1.5)
+    deadline = time.time() + 40
+    while not mock.cancelled and time.time() < deadline:
+        time.sleep(0.5)
     bot.terminate()
     bot.wait(timeout=10)
     server.shutdown()
@@ -250,9 +256,10 @@ def main() -> None:
     assert all(name.lower() == "goodbot" for name, _ in mock.sent_challenges), mock.sent_challenges
     _, form = mock.sent_challenges[0]
     assert form["rated"] == "true" and (form["clock.limit"], form["clock.increment"]) in (("180", "2"), ("300", "3")), form
+    assert mock.cancelled == ["out1"], f"unanswered challenge not cancelled: {mock.cancelled}"
     print(f"ok: declined chess960 (variant), bullet (tooFast) and a second blitz while busy (later), accepted blitz, "
           f"reconnected after a dropped stream, {mock.bot_moves} legal bot moves over {len(mock.moves)} plies, "
-          f"greeting and goodbye sent, token never logged, then challenged the one online bot in rating range")
+          f"greeting and goodbye sent, token never logged, then challenged the one online bot in rating range and cancelled it when unanswered")
 
 
 if __name__ == "__main__":

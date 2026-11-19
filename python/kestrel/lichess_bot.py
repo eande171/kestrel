@@ -330,6 +330,15 @@ class Bot:
                 self.reserved[reply["id"]] = time.time()
             log(f"matchmaking: challenged {opponent['username']} "
                 f"({opponent['perfs'][speed]['rating']}) to {control} {'rated' if c.matchmaking_rated else 'casual'}")
+            threading.Timer(RESERVE_SECONDS, self.cancel_unanswered, args=(reply["id"],)).start()
+
+    def cancel_unanswered(self, challenge_id: str) -> None:
+        """Cancels a challenge Kestrel sent if no game has started from it, so it cannot be accepted much later."""
+        with self.lock:
+            started = challenge_id in self.games
+        if not started:
+            self.api.post(f"/api/challenge/{challenge_id}/cancel")
+            self.release(challenge_id)
 
     def on_game_event(self, game_id: str, event: dict, player: Player, session: dict) -> bool:
         """Handles one game stream event, playing a move when it is Kestrel's turn, and returns True once the game is over."""
