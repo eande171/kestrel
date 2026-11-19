@@ -110,6 +110,7 @@ The bot looks for the config in this order: `--config <path>`, the `KESTREL_BOT_
 | `engine` | `max_depth`, `width` | deepest search, up to 8; with a clock it searches as deep as the time allows up to this (on the Stockfish scale 4 is about 1975, 5 about 2160 and 6 about 2360) and moves searched at each step |
 | `engine` | `randomness` | thousandths of a point; root moves this close to the best are picked at random |
 | `engine` | `reserve_seconds` | seconds kept back from the clock for network lag |
+| `engine` | `ponder` | search on the opponent's time, so whatever they reply, much of the next search is already cached. After 8 seconds of pondering the next search is about twice as fast. Uses the CPU for the whole game |
 | `challenges` | `speeds`, `variants` | any of `ultraBullet`, `bullet`, `blitz`, `rapid`, `classical`, `correspondence`; variants by Lichess key |
 | `challenges` | `min_initial_seconds`, `max_initial_seconds`, `min_increment_seconds` | clock limits |
 | `challenges` | `accept_rated`, `accept_casual`, `accept_bots`, `accept_humans`, `max_games` | who and how many |

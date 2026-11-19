@@ -2,7 +2,9 @@
 
 import math
 import random
+import threading
 import time
+from collections.abc import Callable
 
 import numpy as np
 
@@ -34,7 +36,7 @@ class NetSearch:
         self.randomness = randomness
         self.rng = random.Random()
         self.base_fen: str | None = None
-        self.deadline: float | None = None
+        self.halt: Callable[[], bool] | None = None
         self.last_score = 0.0
         self.completed_depth = 0
         self.nodes = 0
@@ -43,8 +45,8 @@ class NetSearch:
         self.best_child: dict[tuple[str, int], str] = {}
 
     def choose(self, moves: list[str], fen: str, repetitions: int, base_fen: str | None = None,
-               depth: int | None = None, deadline: float | None = None) -> str:
-        """Returns the chosen move in UCI form, searching to the given depth or deepening until a time.monotonic deadline."""
+               depth: int | None = None, deadline: float | None = None, stop: threading.Event | None = None) -> str:
+        """Returns the chosen move in UCI form, searching to the given depth or deepening until a deadline or stop."""
         self.base_fen = base_fen
         self.nodes = 0
         if len(self.values) > CACHE_LIMIT:
@@ -52,16 +54,17 @@ class NetSearch:
             self.values.clear()
             self.best_child.clear()
         depth = depth or self.depth
-        if deadline is None:
-            self.deadline = None
+        if deadline is None and stop is None:
+            self.halt = None
             self.completed_depth = depth
             return self._pick(self._root(moves, fen, repetitions, depth))
-        return self._deepen(moves, fen, repetitions, depth, deadline)
+        return self._deepen(moves, fen, repetitions, depth, math.inf if deadline is None else deadline, stop)
 
-    def _deepen(self, moves: list[str], fen: str, repetitions: int, max_depth: int, deadline: float) -> str:
-        self.deadline = None
+    def _deepen(self, moves: list[str], fen: str, repetitions: int, max_depth: int, deadline: float,
+                stop: threading.Event | None) -> str:
+        self.halt = None
         policy_best = self._expand(moves, fen, repetitions)[0].move
-        self.deadline = deadline
+        self.halt = lambda: time.monotonic() > deadline or (stop is not None and stop.is_set())
         scored, order, previous = None, None, None
         self.completed_depth = 0
         for depth in range(2, max_depth + 1):
@@ -77,7 +80,7 @@ class NetSearch:
             if max(score for score, _ in scored) >= MATE or time.monotonic() + took * growth > deadline:
                 break
             order = [move for _, move in sorted(scored, key=lambda item: -item[0])]
-        self.deadline = None
+        self.halt = None
         if scored is None:
             self.last_score = 0.0
             return policy_best
@@ -141,7 +144,7 @@ class NetSearch:
 
     def _expand(self, moves: list[str], fen: str, repetitions: int) -> list[Child]:
         """Returns the top policy children of a position, with the best move from an earlier search first."""
-        if self.deadline is not None and time.monotonic() > self.deadline:
+        if self.halt is not None and self.halt():
             raise SearchTimeout
         self.nodes += 1
         self.engine.position(moves, fen=self.base_fen)

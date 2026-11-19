@@ -45,6 +45,7 @@ class BotConfig:
     width: int = 6
     randomness: float = 0.01
     reserve_seconds: float = 1.0
+    ponder: bool = True
     max_games: int = 1
     variants: list[str] = field(default_factory=lambda: ["standard"])
     speeds: list[str] = field(default_factory=lambda: ["blitz", "rapid", "classical"])
@@ -369,8 +370,11 @@ class Bot:
         for attempt in range(MOVE_ATTEMPTS):
             if self.api.post(f"/api/bot/game/{game_id}/move/{decision.move}"):
                 session["last_played"] = len(moves)
+                pondered = f", pondered {decision.pondered} positions" if self.config.ponder else ""
                 log(f"game {game_id}: move {len(moves) // 2 + 1} {decision.move} "
-                    f"(depth {decision.depth}, {decision.seconds:.2f}s)")
+                    f"(depth {decision.depth}, {decision.seconds:.2f}s{pondered})")
+                if self.config.ponder:
+                    player.start_pondering(moves + [decision.move], base_fen)
                 return False
             time.sleep(1 + attempt)
         log(f"game {game_id}: could not send {decision.move} after {MOVE_ATTEMPTS} tries")

@@ -11,6 +11,7 @@ max_depth = 8
 width = 6
 randomness = 10
 reserve_seconds = 1.0
+ponder = true
 
 # Challenge Rules
 [challenges]
