@@ -12,7 +12,8 @@ use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
 use crate::game::{parse_san, Game};
 
 pub const RECORD_BYTES: usize = 48;
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
+pub const FLAG_ENGINE_EVAL: u8 = 1;
 
 #[derive(Debug, Clone)]
 pub struct PrepConfig {
@@ -144,7 +145,7 @@ impl<R: Read> Read for Counting<R> {
     }
 }
 
-fn open_input(
+pub(crate) fn open_input(
     input: &str,
     counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> io::Result<(Box<dyn BufRead>, Option<Child>)> {

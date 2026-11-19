@@ -23,9 +23,21 @@ MOP_UP_DEFENDER_MAX = 5
 AHEAD_VALUE = 0.5
 DRAW_PENALTY = 0.1
 
+# Forcing Move Extensions
+EXTRA_FORCING = 3
+QUIESCENCE_PLIES = 4
+QUIESCENCE_WIDTH = 4
+
 
 class SearchTimeout(Exception):
     pass
+
+
+def is_forcing(child: Child, white_moved: bool) -> bool:
+    """Returns True for a capture, a promotion, or a pawn push to the rank before promotion."""
+    if "x" in child.san or "=" in child.san:
+        return True
+    return child.san[0] in "abcdefgh" and child.move[3] == ("7" if white_moved else "2")
 
 
 def mop_up(fen: str) -> float:
@@ -82,6 +94,7 @@ class NetSearch:
         self.root_depth = 0
         self.draw_score = 0.0
         self.endgame_tuning = True
+        self.extensions = True
         self.nodes = 0
         self.priors: dict[tuple[str, int], np.ndarray] = {}
         self.values: dict[tuple[str, int], float] = {}
@@ -152,10 +165,10 @@ class NetSearch:
         scored, best = [], -math.inf
         for child in selected:
             score = self._terminal(child, depth)
+            alpha = best - self.randomness - 1e-9
             if score is None and depth == 1:
-                score = -leaf_values[child.move]
+                score = self._leaf_score(moves, fen, child, leaf_values, alpha, math.inf)
             elif score is None:
-                alpha = best - self.randomness - 1e-9
                 score = -self._search(moves + [child.move], child.fen, child.repetitions, depth - 1, -math.inf, -alpha)
             scored.append((score, child.move))
             best = max(best, score)
@@ -168,7 +181,7 @@ class NetSearch:
         for child in selected:
             score = self._terminal(child, depth)
             if score is None and depth == 1:
-                score = -leaf_values[child.move]
+                score = self._leaf_score(moves, fen, child, leaf_values, max(alpha, best), beta)
             elif score is None:
                 score = -self._search(moves + [child.move], child.fen, child.repetitions, depth - 1,
                                       -beta, -max(alpha, best))
@@ -183,14 +196,14 @@ class NetSearch:
     def _terminal(self, child: Child, depth: int) -> float | None:
         """Returns the score of a finished child for the side that moved into it, or None if the game goes on."""
         if child.status.startswith("checkmate"):
-            return MATE + 0.01 * depth
+            return MATE + 0.01 * max(depth, 0)
         if child.status != "ongoing":
             root_side_moved = (self.root_depth - depth) % 2 == 0
             return self.draw_score if root_side_moved else -self.draw_score
         return None
 
-    def _expand(self, moves: list[str], fen: str, repetitions: int) -> list[Child]:
-        """Returns the top policy children of a position, with the best move from an earlier search first."""
+    def _ordered_children(self, moves: list[str], fen: str, repetitions: int) -> list[Child]:
+        """Returns every child of a position, highest policy first."""
         if self.halt is not None and self.halt():
             raise SearchTimeout
         self.nodes += 1
@@ -203,11 +216,51 @@ class NetSearch:
             prior = policy[0, legal_indices_np([c.move for c in children], fen.split()[1] == "b")]
             self.values[key] = float(value[0])
             self.priors[key] = prior
-        selected = [children[i] for i in np.argsort(-prior, kind="stable")[: self.width]]
-        hint = self.best_child.get(key)
+        return [children[i] for i in np.argsort(-prior, kind="stable")]
+
+    def _expand(self, moves: list[str], fen: str, repetitions: int) -> list[Child]:
+        """Returns the top policy children plus a few forcing ones, with the best move from an earlier search first."""
+        ordered = self._ordered_children(moves, fen, repetitions)
+        selected = ordered[: self.width]
+        if self.extensions:
+            white = fen.split()[1] == "w"
+            selected += [c for c in ordered[self.width:] if is_forcing(c, white)][:EXTRA_FORCING]
+        hint = self.best_child.get(cache_key(fen, repetitions))
         if hint is not None:
             selected.sort(key=lambda c: c.move != hint)
         return selected
+
+    def _leaf_score(self, moves: list[str], fen: str, child: Child, leaf_values: dict[str, float],
+                    alpha: float, beta: float) -> float:
+        """Returns a depth 1 child's score for the side that moved, following forcing replies after a forcing move."""
+        if self.extensions and is_forcing(child, fen.split()[1] == "w"):
+            return -self._quiesce(moves + [child.move], child, -beta, -alpha, 0)
+        return -leaf_values[child.move]
+
+    def _quiesce(self, moves: list[str], node: Child, alpha: float, beta: float, depth: int) -> float:
+        """Returns the score for the side to move, standing pat on the value head or playing forcing moves until quiet."""
+        stand = self._adjusted_value(node)
+        if stand >= beta or depth <= -QUIESCENCE_PLIES:
+            return stand
+        white = node.fen.split()[1] == "w"
+        forcing = [c for c in self._ordered_children(moves, node.fen, node.repetitions) if is_forcing(c, white)]
+        if forcing:
+            self._leaf_values(forcing[:QUIESCENCE_WIDTH])
+        best = stand
+        for child in forcing[:QUIESCENCE_WIDTH]:
+            score = self._terminal(child, depth)
+            if score is None:
+                score = -self._quiesce(moves + [child.move], child, -beta, -max(alpha, best), depth - 1)
+            best = max(best, score)
+            if best >= beta:
+                break
+        return best
+
+    def _adjusted_value(self, child: Child) -> float:
+        value = self.values[cache_key(child.fen, child.repetitions)]
+        if not self.endgame_tuning:
+            return value
+        return min(max(value + mop_up(child.fen), -0.999), 0.999)
 
     def _leaf_values(self, children: list[Child]) -> dict[str, float]:
         """Returns value head scores for the ongoing children, evaluating the uncached ones in one batch."""
@@ -217,7 +270,4 @@ class NetSearch:
             _, values = self.evaluator(np.stack([fen_to_record(c.fen, c.repetitions) for c in missing]))
             for c, v in zip(missing, values):
                 self.values[cache_key(c.fen, c.repetitions)] = float(v)
-        if not self.endgame_tuning:
-            return {c.move: self.values[cache_key(c.fen, c.repetitions)] for c in live}
-        return {c.move: min(max(self.values[cache_key(c.fen, c.repetitions)] + mop_up(c.fen), -0.999), 0.999)
-                for c in live}
+        return {c.move: self._adjusted_value(c) for c in live}

@@ -81,6 +81,7 @@ D:\chess-venv\Scripts\python.exe -m kestrel.uci --model runs/rep/model.onnx --th
 - UCI options: `Depth` (the deepest search allowed, 0 to 8, default 4), `Width` (moves searched at each step, default 6) and `Randomness` (in thousandths; root moves this close to the best are picked at random, default 10, so it does not repeat the same game).
 - Time management: from `wtime`/`btime`/`winc`/`binc` it allows about a thirtieth of the remaining time plus most of the increment. With a clock it searches depth 2, then 3 and so on up to `Depth`, keeps the result of the deepest search that finished, and stops at the deadline even in the middle of a search. It does not start another depth that would probably not finish, judging by how much longer each depth took than the one before. `go depth N` searches exactly that depth.
 - Search: negamax with alpha-beta pruning over the policy's top moves, with value head scores at the leaves. Moves are tried in policy order, except that the best move found by the previous, shallower search goes first, which prunes more. Pruning returns exactly the same move and score as searching the whole tree (checked on 260 positions at depths 2 to 5). Network outputs are cached by position, so transpositions, the deepening steps and the next move's search reuse them.
+- Forcing moves: up to 3 captures or promotions outside the policy's top moves are always searched, and a leaf reached by a capture, promotion or pawn push to the seventh rank keeps following forcing replies (up to 4 at each step, 4 extra plies at most) until the position is quiet, standing pat on the value head. This roughly doubles the positions searched at a given depth, but won 22-4-14 against the search without it at 0.5 s per move, reaching depth 3.8 on average against 4.2.
 - Endgame tuning: when one side is at least 4 points of material ahead and the other has at most a rook's worth left, leaf scores get a small mop-up bonus (up to 0.05) for driving the losing king to the edge and bringing the winning king closer, and the losing side is pushed the other way. When the root position is clearly winning (value above 0.5), draws score -0.1 for Kestrel, so it avoids repetitions and the fifty move rule. In tests it mated a lone king about 10% faster (queen 9.0 moves against 9.8, rook 14.2 against 16.2), and scored 20-5-15 against the untuned search over 40 games at depth 4.
 
 Speed on an i7-12700KF with 2 threads, averaged over 12 positions: depth 4 takes about 0.15 s per move, depth 5 about 0.45 s, depth 6 about 1.1 s and depth 7 about 3.3 s (up to 6 s). So depth 5 fits 1+0 bullet, depth 6 fits blitz and depth 7 fits rapid. Without pruning depth 5 took 3.3 s and depth 6 about 21 s. ONNX and PyTorch choose the same move on 100% of 5,000 test positions (`python/tests/test_features.py`).
@@ -162,6 +163,17 @@ The prep tool streams a Lichess monthly file over HTTP, decompresses it on the f
 
 Run `kestrel.exe` with no arguments for all options (rating threshold, minimum time control, plies skipped, opening position cap and so on). A local `.pgn` or `.pgn.zst` file works too.
 
+The Lichess evaluation database (`lichess_db_eval.jsonl.zst`, 22.5 GB, about 418 million positions with Stockfish analysis, CC0) adds positions with an engine score:
+
+```powershell
+.\engine\target\release\kestrel.exe prep-evals --input D:\chess-data\lichess_db_eval.jsonl.zst `
+  --out D:\chess-data\evals --positions 30000000 --keep-percent 8
+```
+
+It keeps a random `--keep-percent` of lines, takes each position's deepest analysis, and stores Stockfish's best move as the move and its score (converted to an expected score with Lichess's win model, from the side to move's view) in the record. The scores in the file are from White's point of view.
+
+Records are 48 bytes (format 3): the board as 32 bytes of 4-bit piece codes, side to move, castling rights, en passant file, result, move, ply, both ratings, repetition count, halfmove clock, a flags byte (1 means the next byte holds an engine score) and the engine's expected score from 0 to 255. Format 2 shards have zeros in the last two bytes and load unchanged.
+
 ## Training
 
 One command starts a run, and the same command resumes it from the latest checkpoint:
@@ -171,6 +183,9 @@ One command starts a run, and the same command resumes it from the latest checkp
 ```
 
 - Any `train.py` option can be added after the script options, for example `--max-steps 300000 --eval-every 10000 --patience 5`.
+- `-Data` takes several folders, for example `-Data D:\chess-data\games_2026-10, D:\chess-data\evals`. Data larger than `--gpu-data-gb` (2.5) stays in pinned system memory and batches are copied to the GPU, at the same speed.
+- Records with an engine score train the value head towards that score, spread into win, draw and loss chances of q², 2q(1-q) and (1-q)² for an expected score q. Game records use the result. Both train the policy on their move (the human's move or Stockfish's).
+- `--endgame-weight 3` samples positions with `--endgame-pieces` (12) or fewer pieces, kings included, three times as often.
 - `-Quiet` halves the GPU duty cycle and caps the batch at 512 (about 137 W instead of 220 W on the 3070 Ti). `--duty 0.7` gives finer control.
 - To stop cleanly, create an empty file called `STOP` in the run folder, or press Ctrl+C. Both save a checkpoint first.
 - If Python crashes, the script restarts it after 30 seconds and training resumes from the latest checkpoint.

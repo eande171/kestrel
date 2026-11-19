@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use kestrel::game::{ascii_board, Game, Outcome};
+use kestrel::evals::{self, EvalConfig};
 use kestrel::prep::{self, PrepConfig};
 use kestrel::search::Baseline;
 use kestrel::{perft, uci};
@@ -22,6 +23,9 @@ commands:
         --out DIR (data/shards) --positions N (4000000) --min-elo N (1800)
         --min-seconds N (180) --min-plies N (20) --skip-plies N (8)
         --common-plies N (24) --common-cap N (20, 0 disables)
+        --shards N (8) --val-every N (50) --seed N (1)
+  prep-evals --input PATH_OR_URL [options] turn the Lichess evaluation database (.jsonl.zst) into shards
+        --out DIR (data/evals) --positions N (30000000) --keep-percent X (8)
         --shards N (8) --val-every N (50) --seed N (1)";
 
 fn main() {
@@ -70,6 +74,27 @@ fn main() {
             eprintln!("[prep] {cfg:?}");
             if let Err(e) = prep::run(&cfg) {
                 eprintln!("prep failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        "prep-evals" => {
+            let Some(input) = opts.get("input") else {
+                eprintln!("prep-evals needs --input");
+                std::process::exit(2);
+            };
+            let d = EvalConfig::default();
+            let cfg = EvalConfig {
+                input: input.clone(),
+                out_dir: opts.get("out").map(PathBuf::from).unwrap_or(d.out_dir),
+                positions: get_opt(&opts, "positions", d.positions),
+                keep_percent: get_opt(&opts, "keep-percent", d.keep_percent),
+                shards: get_opt(&opts, "shards", d.shards).max(1),
+                val_every: get_opt(&opts, "val-every", d.val_every),
+                seed: get_opt(&opts, "seed", d.seed),
+            };
+            eprintln!("[evals] {cfg:?}");
+            if let Err(e) = evals::run(&cfg) {
+                eprintln!("prep-evals failed: {e}");
                 std::process::exit(1);
             }
         }

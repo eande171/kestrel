@@ -21,11 +21,13 @@ RECORD_DTYPE = np.dtype(
         ("opp_elo", "<u2"),
         ("repetitions", "u1"),
         ("halfmove", "u1"),
-        ("reserved", "u1", (2,)),
+        ("flags", "u1"),
+        ("engine_score", "u1"),
     ]
 )
 assert RECORD_DTYPE.itemsize == RECORD_BYTES
 
+FLAG_ENGINE_EVAL = 1
 NUM_PLANES = 21
 LEGACY_PLANES = 19
 POLICY_SIZE = 4096 + 72
@@ -36,10 +38,15 @@ FLIP = np.arange(64) ^ 56
 OPPONENT_FIRST = [2, 3, 0, 1]
 
 
+def record_width(folder: Path) -> int:
+    """Returns the record size of the shards in a folder, 44 bytes for the first format."""
+    meta = Path(folder) / "meta.json"
+    return json.loads(meta.read_text()).get("record_bytes", 44) if meta.exists() else RECORD_BYTES
+
+
 def read_records(path: Path) -> np.ndarray:
     """Returns records from one shard as uint8 rows of RECORD_BYTES, padding older 44 byte shards."""
-    meta = Path(path).parent / "meta.json"
-    width = json.loads(meta.read_text()).get("record_bytes", 44) if meta.exists() else RECORD_BYTES
+    width = record_width(Path(path).parent)
     rows = np.fromfile(path, dtype=np.uint8).reshape(-1, width)
     if width < RECORD_BYTES:
         rows = np.pad(rows, ((0, 0), (0, RECORD_BYTES - width)))

@@ -1,3 +1,4 @@
+pub mod evals;
 pub mod game;
 pub mod prep;
 pub mod search;

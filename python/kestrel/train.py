@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 from .encoding import encode_planes, encode_targets
-from .features import read_records
+from .features import FLAG_ENGINE_EVAL, RECORD_BYTES, read_records, record_width
 from .inference import TorchEvaluator
 from .match import play_match
 from .model import ChessNet, checkpoint_config, count_parameters
@@ -35,7 +35,10 @@ EVAL_FIELDS = [
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--data", default="data/shards_2026-10")
+    p.add_argument("--data", nargs="+", default=["data/shards_2026-10"], help="one or more shard folders")
+    p.add_argument("--endgame-weight", type=float, default=1.0, help="how many times as often to sample endgames")
+    p.add_argument("--endgame-pieces", type=int, default=12, help="positions with this many pieces or fewer, kings included")
+    p.add_argument("--gpu-data-gb", type=float, default=2.5, help="keep training data on the GPU up to this size")
     p.add_argument("--run", default="runs/main")
     p.add_argument("--blocks", type=int, default=6)
     p.add_argument("--channels", type=int, default=64)
@@ -105,11 +108,41 @@ def keep_awake(enable: bool) -> None:
         ctypes.windll.kernel32.SetThreadExecutionState(flags)
 
 
-def load_shards(data_dir: Path, prefix: str) -> np.ndarray:
-    files = sorted(data_dir.glob(f"{prefix}_*.bin"))
+def load_shards(data_dirs: list[Path], prefix: str) -> np.ndarray:
+    """Returns every shard with the prefix from all data folders as one array, read into place without a second copy."""
+    files = [f for d in data_dirs for f in sorted(d.glob(f"{prefix}_*.bin"))]
     if not files:
-        raise SystemExit(f"no {prefix} shards in {data_dir}")
-    return np.concatenate([read_records(f) for f in files])
+        raise SystemExit(f"no {prefix} shards in {', '.join(map(str, data_dirs))}")
+    rows = sum(f.stat().st_size // record_width(f.parent) for f in files)
+    out = np.empty((rows, RECORD_BYTES), dtype=np.uint8)
+    total = 0
+    for f in files:
+        part = read_records(f)
+        out[total : total + len(part)] = part
+        total += len(part)
+    return out
+
+
+def piece_counts(rows: np.ndarray, chunk: int = 1 << 22) -> np.ndarray:
+    """Returns how many pieces, kings included, each record has on the board."""
+    counts = np.empty(len(rows), dtype=np.uint8)
+    for start in range(0, len(rows), chunk):
+        board = rows[start : start + chunk, :32]
+        counts[start : start + chunk] = ((board & 15) != 0).sum(1) + ((board >> 4) != 0).sum(1)
+    return counts
+
+
+def epoch_order(counts: np.ndarray, endgame_pieces: int, endgame_weight: float, seed: int) -> torch.Tensor:
+    """Returns a shuffled index order for one epoch, repeating endgame records so they appear endgame_weight times as often."""
+    rng = np.random.default_rng(seed)
+    endgames = np.flatnonzero(counts <= endgame_pieces)
+    extra = [endgames] * (int(endgame_weight) - 1)
+    fraction = endgame_weight - int(endgame_weight)
+    if fraction > 0:
+        extra.append(endgames[rng.random(len(endgames)) < fraction])
+    order = np.concatenate([np.arange(len(counts)), *extra]) if extra else np.arange(len(counts))
+    rng.shuffle(order)
+    return torch.from_numpy(order)
 
 
 def lr_at(step: int, args) -> float:
@@ -119,9 +152,20 @@ def lr_at(step: int, args) -> float:
     return args.lr * (0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * progress)))
 
 
+def value_targets(raw: torch.Tensor) -> torch.Tensor:
+    """Returns loss, draw and win probabilities: the game result, or a spread around an engine's expected score."""
+    _, result = encode_targets(raw)
+    hard = F.one_hot(result, 3).float()
+    q = raw[:, 47].float() / 255.0
+    soft = torch.stack([(1 - q) ** 2, 2 * q * (1 - q), q ** 2], dim=1)
+    has_eval = (raw[:, 46] & FLAG_ENGINE_EVAL).bool()[:, None]
+    return torch.where(has_eval, soft, hard)
+
+
 def losses(model, raw, value_weight):
     planes = encode_planes(raw, model.in_planes)
-    target_idx, target_wdl = encode_targets(raw)
+    target_idx, _ = encode_targets(raw)
+    target_wdl = value_targets(raw)
     with torch.autocast("cuda", dtype=torch.bfloat16):
         policy, value = model(planes)
     policy = policy.float()
@@ -130,7 +174,7 @@ def losses(model, raw, value_weight):
     value_loss = F.cross_entropy(value, target_wdl)
     probs = value.softmax(-1)
     expected = probs[:, 2] - probs[:, 0]
-    value_mse = ((expected - (target_wdl.float() - 1)) ** 2).mean()
+    value_mse = ((expected - (target_wdl[:, 2] - target_wdl[:, 0])) ** 2).mean()
     return policy_loss + value_weight * value_loss, policy_loss, value_loss, policy, target_idx, value_mse
 
 
@@ -217,13 +261,20 @@ def main(argv=None) -> int:
     with open(run / "config.json", "w") as f:
         json.dump({**vars(args), "model_config": model.config, "parameters": count_parameters(model)}, f, indent=2)
 
-    data_dir = Path(args.data)
-    train = torch.from_numpy(load_shards(data_dir, "train")).to(device)
-    val = torch.from_numpy(load_shards(data_dir, "val")).to(device)
+    data_dirs = [Path(d) for d in args.data]
+    train_np = load_shards(data_dirs, "train")
+    counts = piece_counts(train_np)
+    on_gpu = train_np.nbytes <= args.gpu_data_gb * 1e9
+    train = torch.from_numpy(train_np)
+    train = train.to(device) if on_gpu else train.pin_memory()
+    del train_np
+    val = torch.from_numpy(load_shards(data_dirs, "val")).to(device)
+    endgames = int((counts <= args.endgame_pieces).sum())
     log_event(
         run,
-        f"data train {len(train):,} val {len(val):,} positions, model {count_parameters(model):,} parameters, "
-        f"batch {args.batch_size}, duty {args.duty}",
+        f"data train {len(train):,} val {len(val):,} positions ({endgames:,} with {args.endgame_pieces} pieces or "
+        f"fewer, weighted x{args.endgame_weight}), kept on {'GPU' if on_gpu else 'pinned CPU memory'}, "
+        f"model {count_parameters(model):,} parameters, batch {args.batch_size}, duty {args.duty}",
     )
 
     def save(reason: str) -> None:
@@ -252,18 +303,21 @@ def main(argv=None) -> int:
     reason = finished()
     try:
         while reason is None:
-            if state["epoch_pos"] >= len(train):
+            if perm is not None and state["epoch_pos"] >= len(perm):
                 state["epoch"] += 1
                 state["epoch_pos"] = 0
                 perm = None
             if perm is None:
-                g = torch.Generator().manual_seed(args.seed * 100_003 + state["epoch"])
-                perm = torch.randperm(len(train), generator=g).to(device)
+                perm = epoch_order(counts, args.endgame_pieces, args.endgame_weight,
+                                   args.seed * 100_003 + state["epoch"])
+                perm = perm.to(device) if on_gpu else perm
 
             step_start = time.time()
             for group in optimizer.param_groups:
                 group["lr"] = lr_at(state["step"], args)
             batch = train[perm[state["epoch_pos"] : state["epoch_pos"] + args.batch_size]]
+            if not on_gpu:
+                batch = batch.to(device, non_blocking=True)
             loss, pl, vl, policy, target, mse = losses(model, batch, args.value_weight)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -292,7 +346,7 @@ def main(argv=None) -> int:
                 row = {
                     "wall_time": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "step": state["step"],
-                    "epoch": round(state["epoch"] + state["epoch_pos"] / len(train), 3),
+                    "epoch": round(state["epoch"] + state["epoch_pos"] / len(perm), 3),
                     "loss": round(float(window["loss"]) / n, 4),
                     "policy_loss": round(float(window["policy"]) / n, 4),
                     "value_loss": round(float(window["value"]) / n, 4),
@@ -333,7 +387,7 @@ def main(argv=None) -> int:
                 append_csv(run / "eval.csv", EVAL_FIELDS, {
                     "wall_time": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "step": state["step"],
-                    "epoch": round(state["epoch"] + state["epoch_pos"] / len(train), 3),
+                    "epoch": round(state["epoch"] + state["epoch_pos"] / len(perm), 3),
                     "train_hours": round(state["train_seconds"] / 3600, 3),
                     "val_loss": round(metrics["loss"], 4),
                     "val_policy_loss": round(metrics["policy"], 4),

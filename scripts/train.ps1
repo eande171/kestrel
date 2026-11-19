@@ -2,7 +2,7 @@
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$Run = "runs/main",
-    [string]$Data = "data/shards_2026-10",
+    [string[]]$Data = @("data/shards_2026-10"),
     [switch]$Quiet,
     [int]$MaxRestarts = 20,
     [string]$Python = "D:\chess-venv\Scripts\python.exe",
@@ -13,7 +13,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $env:PYTHONPATH = Join-Path $root "python"
 
-$trainArgs = @("-m", "kestrel.train", "--run", $Run, "--data", $Data)
+$trainArgs = @("-m", "kestrel.train", "--run", $Run, "--data") + $Data
 if ($Quiet) { $trainArgs += "--quiet" }
 if ($Extra) { $trainArgs += $Extra }
 
