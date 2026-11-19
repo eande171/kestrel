@@ -63,6 +63,7 @@ struct Stats {
     positions_val: u64,
     skipped_common: u64,
     bytes_read: u64,
+    truncated: bool,
 }
 
 #[derive(Default)]
@@ -189,7 +190,15 @@ pub fn run(cfg: &PrepConfig) -> io::Result<()> {
 
     loop {
         line.clear();
-        let n = reader.read_until(b'\n', &mut line)?;
+        let n = match reader.read_until(b'\n', &mut line) {
+            Ok(n) => n,
+            Err(e) if stats.games_read > 0 => {
+                eprintln!("[prep] input ended early ({e}), keeping the {} positions so far", stats.positions_train);
+                stats.truncated = true;
+                break;
+            }
+            Err(e) => return Err(e),
+        };
         let text = String::from_utf8_lossy(&line);
         let trimmed = text.trim();
         let at_end = n == 0;
@@ -285,7 +294,8 @@ fn write_meta(cfg: &PrepConfig, s: &Stats, seconds: f64) -> io::Result<()> {
          \"val_every\": {},\n  \"shards\": {},\n  \"games_read\": {},\n  \"games_kept\": {},\n  \
          \"rejected_rating\": {},\n  \"rejected_speed\": {},\n  \"rejected_termination\": {},\n  \
          \"rejected_short\": {},\n  \"rejected_parse\": {},\n  \"skipped_common\": {},\n  \
-         \"positions_train\": {},\n  \"positions_val\": {},\n  \"compressed_bytes_read\": {},\n  \"seconds\": {:.1}\n}}\n",
+         \"positions_train\": {},\n  \"positions_val\": {},\n  \"compressed_bytes_read\": {},\n  \"truncated\": {},\n  \
+         \"seconds\": {:.1}\n}}\n",
         cfg.input.replace('\\', "/"),
         cfg.min_elo,
         cfg.min_seconds,
@@ -306,6 +316,7 @@ fn write_meta(cfg: &PrepConfig, s: &Stats, seconds: f64) -> io::Result<()> {
         s.positions_train,
         s.positions_val,
         s.bytes_read,
+        s.truncated,
         seconds
     );
     fs::write(cfg.out_dir.join("meta.json"), json)

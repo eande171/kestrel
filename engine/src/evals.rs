@@ -106,8 +106,14 @@ pub fn run(cfg: &EvalConfig) -> io::Result<()> {
     let mut last_report = Instant::now();
     loop {
         line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
-            break;
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) if stats.lines > 0 => {
+                eprintln!("[evals] input ended early ({e}), keeping the {} positions so far", stats.positions_train);
+                break;
+            }
+            Err(e) => return Err(e),
         }
         stats.lines += 1;
         rng ^= rng << 13;
