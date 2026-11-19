@@ -39,7 +39,7 @@ class BotConfig:
     base_url: str = "https://lichess.org"
     model: Path = Path("model.onnx")
     threads: int = 2
-    max_depth: int = 5
+    max_depth: int = 8
     width: int = 6
     randomness: float = 0.01
     reserve_seconds: float = 1.0
