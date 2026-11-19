@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .engine_client import Engine
+from .engine_client import Engine, State, result_for
 from .inference import greedy_move
 from .search import NetSearch
 
@@ -36,6 +36,7 @@ class MatchResult:
     endings: dict[str, int] = field(default_factory=dict)
     seconds_per_move: float = 0.0
     move_lists: list[list[str]] = field(default_factory=list)
+    statuses: list[str] = field(default_factory=list)
 
     @property
     def games(self) -> int:
@@ -44,6 +45,14 @@ class MatchResult:
     @property
     def score(self) -> float:
         return (self.wins + 0.5 * self.draws) / max(1, self.games)
+
+
+def pgn(sans: list[str], white: str, black: str, result: str, event: str | None = None) -> str:
+    """Returns one PGN game from SAN moves, with Event and Date headers when an event is given."""
+    headers = [f'[Event "{event}"]', f'[Date "{time.strftime("%Y.%m.%d")}"]'] if event else []
+    headers += [f'[White "{white}"]', f'[Black "{black}"]', f'[Result "{result}"]']
+    body = " ".join(f"{i // 2 + 1}. {san}" if i % 2 == 0 else san for i, san in enumerate(sans))
+    return "\n".join(headers) + f"\n\n{body} {result}\n"
 
 
 def play_match(
@@ -56,12 +65,18 @@ def play_match(
     width: int = 6,
     opponent: Callable[[list[str]], str] | None = None,
     on_game: Callable[[int, MatchResult], None] | None = None,
+    mover: Callable[[list[str], State], str] | None = None,
 ) -> MatchResult:
-    """Plays games against the baseline at a fixed depth, or another opponent, alternating colours over an opening book."""
+    """Plays the network or a mover against the baseline or an opponent, alternating colours over an opening book."""
     result = MatchResult(depth=depth)
     rng = np.random.default_rng(seed)
     with Engine(depth=depth, seed=int(rng.integers(1, 2**31))) as engine:
         searcher = NetSearch(evaluator, engine, search_depth, width) if search_depth > 0 else None
+        if mover is None:
+            def mover(moves: list[str], state: State) -> str:
+                if searcher:
+                    return searcher.choose(moves, state.fen, state.repetitions)
+                return greedy_move(evaluator, state.fen, state.repetitions, state.legal)
         net_moves, net_seconds = 0, 0.0
         for g in range(games):
             engine.set_option("Seed", int(rng.integers(1, 2**31)))
@@ -75,10 +90,7 @@ def play_match(
                 white_to_move = state.fen.split()[1] == "w"
                 if white_to_move == net_is_white:
                     start = time.time()
-                    if searcher:
-                        mv = searcher.choose(moves, state.fen, state.repetitions)
-                    else:
-                        mv = greedy_move(evaluator, state.fen, state.repetitions, state.legal)
+                    mv = mover(moves, state)
                     net_seconds += time.time() - start
                     net_moves += 1
                 elif opponent:
@@ -92,15 +104,15 @@ def play_match(
             status = state.status if state.status != "ongoing" else "move_limit"
             result.endings[status] = result.endings.get(status, 0) + 1
             result.plies.append(len(moves))
-            if status.startswith("checkmate"):
-                net_won = (status == "checkmate_white") == net_is_white
-                if net_won:
-                    result.wins += 1
-                else:
-                    result.losses += 1
-            else:
+            outcome = result_for(status)
+            if outcome == "1/2-1/2":
                 result.draws += 1
+            elif (outcome == "1-0") == net_is_white:
+                result.wins += 1
+            else:
+                result.losses += 1
             result.move_lists.append(moves)
+            result.statuses.append(status)
             if on_game:
                 on_game(g, result)
         result.seconds_per_move = net_seconds / max(1, net_moves)

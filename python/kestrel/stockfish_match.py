@@ -3,38 +3,25 @@
 import argparse
 import json
 import math
-import subprocess
 import time
 from pathlib import Path
 
-from .engine_client import Engine
+from .engine_client import Engine, UciProcess, result_for
 from .inference import OnnxEvaluator, TorchEvaluator
-from .match import MatchResult, play_match
+from .match import MatchResult, pgn, play_match
 
 DEFAULT_STOCKFISH = Path(__file__).resolve().parents[2] / "tools" / "stockfish-19" / "stockfish" / "stockfish-windows-x86-64-universal.exe"
 
 
-class Stockfish:
+class Stockfish(UciProcess):
     def __init__(self, path: Path, elo: int, movetime_ms: int):
+        super().__init__([str(path)])
         self.movetime_ms = movetime_ms
-        self.proc = subprocess.Popen([str(path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
         self._send("uci")
         self._read_until("uciok")
         for name, value in (("Threads", 1), ("Hash", 16), ("UCI_LimitStrength", "true"), ("UCI_Elo", elo)):
-            self._send(f"setoption name {name} value {value}")
+            self.set_option(name, value)
         self.new_game()
-
-    def _send(self, line: str) -> None:
-        self.proc.stdin.write(line + "\n")
-        self.proc.stdin.flush()
-
-    def _read_until(self, prefix: str) -> str:
-        while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                raise RuntimeError("stockfish exited")
-            if line.startswith(prefix):
-                return line.strip()
 
     def new_game(self) -> None:
         self._send("ucinewgame")
@@ -42,16 +29,8 @@ class Stockfish:
         self._read_until("readyok")
 
     def move(self, moves: list[str]) -> str:
-        self._send(f"position startpos moves {' '.join(moves)}" if moves else "position startpos")
-        self._send(f"go movetime {self.movetime_ms}")
-        return self._read_until("bestmove").split()[1]
-
-    def close(self) -> None:
-        try:
-            self._send("quit")
-            self.proc.wait(timeout=5)
-        except Exception:
-            self.proc.kill()
+        self.position(moves)
+        return self.go(f"movetime {self.movetime_ms}")
 
 
 def expected(rating: float, opponent: float) -> float:
@@ -74,20 +53,14 @@ def fit_rating(levels: list[tuple[int, float, int]]) -> tuple[int, int, int]:
     return best, min(inside), max(inside)
 
 
-def to_pgn(engine: Engine, moves: list[str], white: str, black: str, result: str) -> str:
+def sans_for(engine: Engine, moves: list[str]) -> list[str]:
+    """Returns the SAN form of each move in a game played from the start."""
     sans = []
     for i, mv in enumerate(moves):
         engine.position(moves[:i])
         parsed = engine.parse(mv)
         sans.append(parsed[1] if parsed else mv)
-    body = " ".join(f"{i // 2 + 1}. {s}" if i % 2 == 0 else s for i, s in enumerate(sans))
-    return f'[White "{white}"]\n[Black "{black}"]\n[Result "{result}"]\n\n{body} {result}\n'
-
-
-def game_result(moves: list[str], engine: Engine) -> str:
-    engine.position(moves)
-    status = engine.state().status
-    return {"checkmate_white": "1-0", "checkmate_black": "0-1"}.get(status, "1/2-1/2")
+    return sans
 
 
 def main(argv=None) -> None:
@@ -125,13 +98,12 @@ def main(argv=None) -> None:
     rows, fit_rows = [], []
     with Engine() as referee:
         for elo in args.levels:
-            sf = Stockfish(args.stockfish, elo, args.movetime)
             start = time.time()
-            r: MatchResult = play_match(
-                evaluator, 0, args.games, seed=elo, search_depth=args.search_depth, width=args.width,
-                opponent=sf.move, on_game=lambda g, res: sf.new_game(),
-            )
-            sf.close()
+            with Stockfish(args.stockfish, elo, args.movetime) as sf:
+                r: MatchResult = play_match(
+                    evaluator, 0, args.games, seed=elo, search_depth=args.search_depth, width=args.width,
+                    opponent=sf.move, on_game=lambda g, res: sf.new_game(),
+                )
             avg = sum(r.plies) / max(1, len(r.plies))
             print(f"| {elo} | {r.games} | {r.wins} | {r.draws} | {r.losses} | {r.score:.2f} | {avg:.0f} | "
                   f"{r.seconds_per_move:.2f} |", flush=True)
@@ -143,7 +115,7 @@ def main(argv=None) -> None:
             for g, moves in enumerate(r.move_lists):
                 net_white = g % 2 == 0
                 white, black = ("Kestrel", f"Stockfish {elo}") if net_white else (f"Stockfish {elo}", "Kestrel")
-                pgns.append(to_pgn(referee, moves, white, black, game_result(moves, referee)))
+                pgns.append(pgn(sans_for(referee, moves), white, black, result_for(r.statuses[g])))
             (out_dir / f"games_{elo}.pgn").write_text("\n".join(pgns))
 
     best, low, high = fit_rating(fit_rows)

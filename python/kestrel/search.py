@@ -1,7 +1,6 @@
 """Small fixed depth search over the policy's top moves, scored by the value head."""
 
 import random
-import time
 
 import numpy as np
 
@@ -14,18 +13,16 @@ MATE = 1.0
 class NetSearch:
     """Negamax to a fixed depth over the top policy moves, with value head scores at the leaves."""
 
-    def __init__(self, evaluator, engine: Engine, depth: int = 2, width: int = 6, randomness: float = 0.0,
-                 seed: int | None = None):
+    def __init__(self, evaluator, engine: Engine, depth: int = 2, width: int = 6, randomness: float = 0.0):
         self.evaluator = evaluator
         self.engine = engine
         self.depth = depth
         self.width = width
         self.randomness = randomness
-        self.rng = random.Random(seed)
+        self.rng = random.Random()
         self.base_fen: str | None = None
-        self.nodes = 0
-        self.seconds = 0.0
         self.last_score = 0.0
+        self.nodes = 0
 
     def _evaluate(self, positions: list[tuple[str, int]]) -> tuple[np.ndarray, np.ndarray]:
         return self.evaluator(np.stack([fen_to_record(fen, reps) for fen, reps in positions]))
@@ -33,16 +30,14 @@ class NetSearch:
     def choose(self, moves: list[str], fen: str, repetitions: int, base_fen: str | None = None,
                depth: int | None = None) -> str:
         """Returns the chosen move in UCI form for the position reached by the move list."""
-        start = time.time()
         self.base_fen = base_fen
+        self.nodes = 0
         scored = self._search(moves, fen, repetitions, depth or self.depth, root=True)
-        best_score = max(score for score, _ in scored)
-        candidates = [move for score, move in scored if score >= best_score - self.randomness]
-        if self.randomness <= 0 or best_score >= MATE:
-            candidates = [next(move for score, move in scored if score == best_score)]
-        choice = self.rng.choice(candidates)
-        self.last_score = next(score for score, move in scored if move == choice)
-        self.seconds += time.time() - start
+        best = max(scored, key=lambda item: item[0])
+        pool = [best]
+        if self.randomness > 0 and best[0] < MATE:
+            pool = [item for item in scored if item[0] >= best[0] - self.randomness]
+        self.last_score, choice = self.rng.choice(pool)
         return choice
 
     def _search(self, moves: list[str], fen: str, repetitions: int, depth: int, root: bool = False):

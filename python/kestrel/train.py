@@ -15,10 +15,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .encoding import LEGACY_PLANES, encode_planes, encode_targets, read_records
+from .encoding import encode_planes, encode_targets
+from .features import read_records
 from .inference import TorchEvaluator
 from .match import play_match
-from .model import ChessNet, count_parameters
+from .model import ChessNet, checkpoint_config, count_parameters
 
 LOG_FIELDS = [
     "wall_time", "step", "epoch", "loss", "policy_loss", "value_loss", "policy_acc", "value_mse",
@@ -205,7 +206,7 @@ def main(argv=None) -> int:
 
     if latest_path.exists():
         ckpt = torch.load(latest_path, map_location=device, weights_only=False)
-        if {"in_planes": LEGACY_PLANES, **ckpt["model_config"]} != model.config:
+        if checkpoint_config(ckpt) != model.config:
             raise SystemExit(f"checkpoint model config {ckpt['model_config']} differs from {model.config}")
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
@@ -217,10 +218,8 @@ def main(argv=None) -> int:
         json.dump({**vars(args), "model_config": model.config, "parameters": count_parameters(model)}, f, indent=2)
 
     data_dir = Path(args.data)
-    train_np = load_shards(data_dir, "train")
-    val_np = load_shards(data_dir, "val")
-    train = torch.from_numpy(train_np).to(device)
-    val = torch.from_numpy(val_np).to(device)
+    train = torch.from_numpy(load_shards(data_dir, "train")).to(device)
+    val = torch.from_numpy(load_shards(data_dir, "val")).to(device)
     log_event(
         run,
         f"data train {len(train):,} val {len(val):,} positions, model {count_parameters(model):,} parameters, "

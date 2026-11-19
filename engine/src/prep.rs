@@ -9,7 +9,7 @@ use cozy_chess::{Board, Color, Move, Piece, Square};
 use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
 use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
 
-use crate::game::parse_san;
+use crate::game::{parse_san, Game};
 
 pub const RECORD_BYTES: usize = 48;
 pub const FORMAT_VERSION: u32 = 2;
@@ -367,26 +367,15 @@ fn filter_and_parse(cfg: &PrepConfig, h: &Headers, movetext: &str, stats: &mut S
         }
     }
 
-    let mut board = Board::default();
+    let mut game = Game::startpos();
     let mut positions = Vec::with_capacity(128);
-    let mut history: Vec<u64> = Vec::with_capacity(128);
     for token in san_tokens(movetext) {
-        match parse_san(&board, token) {
-            Ok(mv) => {
-                let hash = board.hash();
-                let repetitions = history.iter().filter(|&&h| h == hash).count().min(2) as u8;
-                history.push(hash);
-                positions.push((board.clone(), mv, repetitions));
-                board.play_unchecked(mv);
-                if board.halfmove_clock() == 0 {
-                    history.clear();
-                }
-            }
-            Err(_) => {
-                stats.rejected_parse += 1;
-                return None;
-            }
-        }
+        let Ok(mv) = parse_san(&game.board, token) else {
+            stats.rejected_parse += 1;
+            return None;
+        };
+        positions.push((game.board.clone(), mv, game.repetitions().min(2) as u8));
+        game.play(mv).ok()?;
     }
     if (positions.len() as u32) < cfg.min_plies {
         stats.rejected_short += 1;
@@ -428,12 +417,11 @@ fn san_tokens(movetext: &str) -> impl Iterator<Item = &str> {
         }
     }
     cleaned.into_iter().filter_map(|t| {
-        let t = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
-        if t.is_empty() || t.starts_with('$') || matches!(t, "1-0" | "0-1" | "1/2-1/2" | "*" | "-0" | "-1" | "/2-1/2") {
-            None
-        } else {
-            Some(t)
+        if matches!(t, "1-0" | "0-1" | "1/2-1/2" | "*") {
+            return None;
         }
+        let t = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
+        (!t.is_empty() && !t.starts_with('$')).then_some(t)
     })
 }
 

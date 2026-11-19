@@ -35,8 +35,6 @@ class ChessApi:
     def position(self, moves: list[str]) -> dict:
         self.engine.position(moves)
         state = self.engine.state()
-        if state.plies != len(moves):
-            raise ValueError("illegal move list")
         children = self.engine.children() if state.status == "ongoing" else []
         return {
             "fen": state.fen,
@@ -97,7 +95,6 @@ def make_handler(api: ChessApi):
                 if self.path == "/api/position":
                     return self._json(200, api.position(moves))
                 if self.path == "/api/move":
-                    api.position(moves)
                     return self._json(200, api.reply(moves, int(body.get("depth", 3)), int(body.get("width", 6))))
                 self._json(404, {"error": "unknown endpoint"})
             except (ValueError, KeyError, json.JSONDecodeError) as e:

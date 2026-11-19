@@ -8,14 +8,13 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from kestrel.encoding import (  # noqa: E402
+from kestrel.encoding import encode_planes, encode_targets  # noqa: E402
+from kestrel.features import (  # noqa: E402
+    NUM_PLANES,
     PIECE_CHARS,
     POLICY_SIZE,
-    NUM_PLANES,
-    encode_planes,
-    encode_targets,
     fen_to_record,
-    legal_indices,
+    legal_indices_np,
     read_records,
 )
 from kestrel.engine_client import Engine  # noqa: E402
@@ -70,7 +69,7 @@ def main(path: str, samples: int = 3000) -> None:
             assert np.array_equal(again[44:46], rec[44:46]), fen
             engine.position([], fen=fen)
             state = engine.state()
-            legal = legal_indices(state.legal, rec[32] == 1).tolist()
+            legal = legal_indices_np(state.legal, rec[32] == 1).tolist()
             assert len(set(legal)) == len(legal), f"index collision in {fen}"
             assert target in legal, f"played move not legal in {fen}"
             checked += 1

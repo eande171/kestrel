@@ -8,10 +8,15 @@ from .engine_client import Engine
 from .inference import greedy_move
 from .search import MATE, NetSearch
 
-# Seconds Per Move Guesses
-INITIAL_COST = {0: 0.02, 2: 0.15}
-DEPTH_GROWTH = 6.0
+# Time Model
+GREEDY_SECONDS = 0.02
+INITIAL_NODE_SECONDS = 0.003
 MAX_DEPTH = 6
+
+
+def full_tree_nodes(depth: int, width: int) -> int:
+    """Returns how many positions a search of this depth expands when every position has at least width moves."""
+    return sum(width ** i for i in range(depth))
 
 
 @dataclass
@@ -53,7 +58,7 @@ class Player:
         self.reserve_seconds = reserve_seconds
         self.engine = Engine()
         self.search = NetSearch(evaluator, self.engine, max_depth, width, randomness)
-        self.cost = dict(INITIAL_COST)
+        self.node_seconds = INITIAL_NODE_SECONDS
 
     def budget(self, clock: Clock, white_to_move: bool) -> float:
         """Returns the seconds this move may use."""
@@ -68,10 +73,10 @@ class Player:
         return min(remaining / moves_left + 0.75 * increment, remaining * 0.2)
 
     def estimate(self, depth: int) -> float:
-        """Returns the expected seconds for a search of this depth, scaling up from the depth below if unmeasured."""
-        if depth in self.cost:
-            return self.cost[depth]
-        return self.estimate(depth - 1) * DEPTH_GROWTH
+        """Returns the expected seconds for a search of this depth in a position with plenty of moves."""
+        if depth == 0:
+            return GREEDY_SECONDS
+        return self.node_seconds * full_tree_nodes(depth, self.search.width)
 
     def choose(self, moves: list[str], base_fen: str | None, clock: Clock) -> Decision:
         """Returns the move to play after the given moves, within the clock's budget."""
@@ -96,8 +101,8 @@ class Player:
             move = self.search.choose(moves, state.fen, state.repetitions, base_fen=base_fen, depth=depth)
             score = self.search.last_score
         elapsed = time.time() - start
-        if len(state.legal) > 1:
-            self.cost[depth] = 0.7 * self.cost[depth] + 0.3 * elapsed if depth in self.cost else elapsed
+        if depth >= 2 and len(state.legal) > 1:
+            self.node_seconds = 0.7 * self.node_seconds + 0.3 * elapsed / self.search.nodes
         return Decision(move, depth, elapsed, score)
 
     def close(self) -> None:

@@ -79,7 +79,7 @@ D:\chess-venv\Scripts\python.exe -m kestrel.uci --model runs/rep/model.onnx --th
 
 - Needs `numpy`, `onnxruntime`, an exported model and the Rust `kestrel` binary (found next to the repo, or set `KESTREL_ENGINE`). `KESTREL_MODEL` and `KESTREL_THREADS` set the defaults.
 - UCI options: `Depth` (the deepest search allowed, 0 to 6, default 4), `Width` (moves searched at each step, default 6) and `Randomness` (in thousandths; root moves this close to the best are picked at random, default 10, so it does not repeat the same game).
-- Time management: from `wtime`/`btime`/`winc`/`binc` it allows about a thirtieth of the remaining time plus most of the increment, and drops to a shallower search when a deeper one would not fit. It learns how long each depth takes as it plays, and guesses a depth it has not tried yet as 6 times the one below.
+- Time management: from `wtime`/`btime`/`winc`/`binc` it allows about a thirtieth of the remaining time plus most of the increment, and drops to a shallower search when a deeper one would not fit. It measures the time per searched position as it plays and multiplies it by the size of a full search tree at each depth, so a quick search in a forced position does not make deeper searches look cheap.
 
 Speed on an i7-12700KF with 2 threads: depth 3 takes about 0.1 s per move, depth 4 about 0.6 s, depth 5 about 3.5 s and depth 6 about 21 s. So depth 5 fits 5+3 blitz and depth 6 fits 15+10 rapid. ONNX and PyTorch choose the same move on 100% of 5,000 test positions (`python/tests/test_features.py`).
 

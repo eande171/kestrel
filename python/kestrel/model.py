@@ -5,7 +5,7 @@ import math
 import torch
 from torch import nn
 
-from .encoding import LEGACY_PLANES, NUM_PLANES
+from .features import LEGACY_PLANES, NUM_PLANES
 
 
 class ResBlock(nn.Module):
@@ -61,7 +61,7 @@ class ChessNet(nn.Module):
         from_sq, to_sq, valid = _underpromotion_gather()
         self.register_buffer("under_from", from_sq, persistent=False)
         self.register_buffer("under_to", to_sq, persistent=False)
-        self.register_buffer("under_valid", valid, persistent=False)
+        self.register_buffer("invalid", torch.cat([torch.zeros(4096, dtype=torch.bool), ~valid]), persistent=False)
 
         # Value Head
         self.value = nn.Sequential(
@@ -92,8 +92,7 @@ class ChessNet(nn.Module):
             kt = k[:, piece + 1][:, :, self.under_to].transpose(1, 2)
             logits.append((qf * kt).sum(-1) * scale)
         policy = torch.cat(logits, dim=1)
-        invalid = torch.cat([torch.zeros(4096, dtype=torch.bool, device=x.device), ~self.under_valid])
-        policy = policy.masked_fill(invalid, -1e4)
+        policy = policy.masked_fill(self.invalid, -1e4)
         return policy, self.value(x)
 
 
@@ -101,11 +100,15 @@ def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
 
+def checkpoint_config(ckpt: dict) -> dict:
+    """Returns a checkpoint's model config, treating older configs without in_planes as 19 input planes."""
+    return {"in_planes": LEGACY_PLANES, **ckpt["model_config"]}
+
+
 def load_model(path, device: str = "cpu") -> tuple[ChessNet, dict]:
-    """Returns an eval mode model and the raw checkpoint, treating older configs as 19 input planes."""
+    """Returns an eval mode model and the raw checkpoint."""
     ckpt = torch.load(path, map_location=device, weights_only=False)
-    config = {"in_planes": LEGACY_PLANES, **ckpt["model_config"]}
-    model = ChessNet(**config).to(device)
+    model = ChessNet(**checkpoint_config(ckpt)).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     return model, ckpt

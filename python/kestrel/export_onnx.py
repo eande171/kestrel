@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .encoding import POLICY_SIZE
+from .features import POLICY_SIZE
 from .model import count_parameters, load_model
 
 

@@ -1,6 +1,7 @@
 """Plays Kestrel on Lichess through the Bot API, configured by a TOML file kept outside the repo."""
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -10,7 +11,7 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from .inference import OnnxEvaluator
@@ -18,6 +19,10 @@ from .player import Clock, Player
 
 USER_AGENT = "kestrel-bot"
 SPEEDS = ["ultraBullet", "bullet", "blitz", "rapid", "classical", "correspondence"]
+STREAM_ERRORS = (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException, json.JSONDecodeError)
+MAX_STREAM_FAILURES = 10
+MOVE_ATTEMPTS = 4
+RESERVE_SECONDS = 30
 
 
 def default_config_path() -> Path:
@@ -34,7 +39,7 @@ class BotConfig:
     base_url: str = "https://lichess.org"
     model: Path = Path("model.onnx")
     threads: int = 2
-    max_depth: int = 4
+    max_depth: int = 5
     width: int = 6
     randomness: float = 0.01
     reserve_seconds: float = 1.0
@@ -54,6 +59,8 @@ class BotConfig:
     goodbye: str = ""
 
 
+CONVERTERS = {int: int, float: float, bool: bool, str: str, list[str]: list}
+
 def load_config(path: Path) -> BotConfig:
     """Returns the bot settings from a TOML file, reading the token from the file, token_file or LICHESS_BOT_TOKEN."""
     data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -68,38 +75,24 @@ def load_config(path: Path) -> BotConfig:
     if not token:
         raise SystemExit("no Lichess token: set lichess.token_file in the config or LICHESS_BOT_TOKEN")
 
-    model = Path(engine.get("model", "model.onnx"))
+    model = Path(engine.get("model", BotConfig.model))
     if not model.is_absolute():
         model = path.parent / model
-    speeds = challenges.get("speeds", ["blitz", "rapid", "classical"])
-    unknown = [s for s in speeds if s not in SPEEDS]
+
+    settings = {**engine, **challenges, **chat}
+    types = {f.name: f.type for f in fields(BotConfig)}
+    kwargs = {k: CONVERTERS[types[k]](v) for k, v in settings.items() if k in types and k not in ("token", "model")}
+    if "base_url" in lichess:
+        kwargs["base_url"] = lichess["base_url"].rstrip("/")
+    if "randomness" in kwargs:
+        kwargs["randomness"] /= 1000
+    for key in ("allow_users", "block_users"):
+        if key in kwargs:
+            kwargs[key] = [u.lower() for u in kwargs[key]]
+    unknown = [s for s in kwargs.get("speeds", []) if s not in SPEEDS]
     if unknown:
         raise SystemExit(f"unknown speeds in config: {unknown}, expected some of {SPEEDS}")
-
-    return BotConfig(
-        token=token,
-        base_url=lichess.get("base_url", "https://lichess.org").rstrip("/"),
-        model=model,
-        threads=int(engine.get("threads", 2)),
-        max_depth=int(engine.get("max_depth", 4)),
-        width=int(engine.get("width", 6)),
-        randomness=float(engine.get("randomness", 10)) / 1000,
-        reserve_seconds=float(engine.get("reserve_seconds", 1.0)),
-        max_games=int(challenges.get("max_games", 1)),
-        variants=list(challenges.get("variants", ["standard"])),
-        speeds=list(speeds),
-        min_initial_seconds=int(challenges.get("min_initial_seconds", 60)),
-        max_initial_seconds=int(challenges.get("max_initial_seconds", 3600)),
-        min_increment_seconds=int(challenges.get("min_increment_seconds", 0)),
-        accept_rated=bool(challenges.get("accept_rated", True)),
-        accept_casual=bool(challenges.get("accept_casual", True)),
-        accept_bots=bool(challenges.get("accept_bots", True)),
-        accept_humans=bool(challenges.get("accept_humans", True)),
-        allow_users=[u.lower() for u in challenges.get("allow_users", [])],
-        block_users=[u.lower() for u in challenges.get("block_users", [])],
-        greeting=chat.get("greeting", ""),
-        goodbye=chat.get("goodbye", ""),
-    )
+    return BotConfig(token=token, model=model, **kwargs)
 
 
 def log(text: str) -> None:
@@ -137,8 +130,8 @@ class LichessApi:
                     continue
                 log(f"POST {path.split('?')[0]} failed: HTTP {e.code} {e.read()[:200]!r}")
                 return False
-            except (urllib.error.URLError, TimeoutError) as e:
-                log(f"POST {path.split('?')[0]} failed: {e}, retrying")
+            except STREAM_ERRORS as e:
+                log(f"POST {path.split('?')[0]} failed: {e!r}, retrying")
                 time.sleep(1 + attempt)
         return False
 
@@ -158,13 +151,22 @@ class Bot:
         self.evaluator = None
         self.username = ""
         self.games: dict[str, threading.Thread] = {}
+        self.reserved: dict[str, float] = {}
         self.lock = threading.Lock()
         self.stop = threading.Event()
 
     def active_games(self) -> int:
+        """Returns running games plus accepted challenges whose game has not started yet."""
         with self.lock:
             self.games = {gid: t for gid, t in self.games.items() if t.is_alive()}
-            return len(self.games)
+            now = time.time()
+            self.reserved = {cid: t for cid, t in self.reserved.items()
+                             if now - t < RESERVE_SECONDS and cid not in self.games}
+            return len(self.games) + len(self.reserved)
+
+    def release(self, challenge_id: str) -> None:
+        with self.lock:
+            self.reserved.pop(challenge_id, None)
 
     # Challenge Policy
     def decline_reason(self, challenge: dict) -> str | None:
@@ -187,6 +189,8 @@ class Bot:
             return "rated"
         speed = challenge.get("speed")
         if control.get("type") != "clock":
+            return "timeControl"
+        if not c.speeds:
             return "timeControl"
         if speed not in c.speeds:
             slowest_allowed = min(SPEEDS.index(s) for s in c.speeds)
@@ -212,7 +216,9 @@ class Bot:
             self.api.post(f"/api/challenge/{challenge['id']}/decline", {"reason": reason})
         else:
             log(f"accepting challenge {challenge['id']} from {who} ({summary})")
-            self.api.post(f"/api/challenge/{challenge['id']}/accept")
+            if self.api.post(f"/api/challenge/{challenge['id']}/accept"):
+                with self.lock:
+                    self.reserved[challenge["id"]] = time.time()
 
     def start_game(self, game_id: str) -> None:
         with self.lock:
@@ -226,54 +232,72 @@ class Bot:
     def play_game(self, game_id: str) -> None:
         player = Player(self.evaluator, self.config.max_depth, self.config.width, self.config.randomness,
                         self.config.reserve_seconds)
-        color = None
-        base_fen = None
-        greeted = False
-        last_played = -1
+        session = {"color": None, "base_fen": None, "greeted": False, "last_played": -1}
+        failures = 0
         try:
-            for attempt in range(5):
+            while failures < MAX_STREAM_FAILURES:
                 try:
                     for event in self.api.stream(f"/api/bot/game/stream/{game_id}"):
-                        kind = event.get("type")
-                        if kind == "gameFull":
-                            me = self.username.lower()
-                            color = "white" if (event.get("white") or {}).get("id", "").lower() == me else "black"
-                            initial = event.get("initialFen", "startpos")
-                            base_fen = None if initial in ("startpos", "") else initial
-                            opponent = event.get("black" if color == "white" else "white") or {}
-                            log(f"game {game_id}: playing {color} against {opponent.get('name', opponent.get('aiLevel', '?'))}")
-                            if self.config.greeting and not greeted:
-                                self.api.post(f"/api/bot/game/{game_id}/chat", {"room": "player", "text": self.config.greeting})
-                                greeted = True
-                            state = event.get("state", {})
-                        elif kind == "gameState":
-                            state = event
-                        else:
-                            continue
-                        if state.get("status") not in ("started", "created"):
-                            log(f"game {game_id}: finished ({state.get('status')}, winner {state.get('winner', 'none')})")
-                            if self.config.goodbye:
-                                self.api.post(f"/api/bot/game/{game_id}/chat", {"room": "player", "text": self.config.goodbye})
+                        failures = 0
+                        if self.on_game_event(game_id, event, player, session):
                             return
-                        moves = state.get("moves", "").split()
-                        start_white = base_fen is None or base_fen.split()[1] == "w"
-                        white_to_move = (len(moves) % 2 == 0) == start_white
-                        if color is None or (white_to_move != (color == "white")) or len(moves) == last_played:
-                            continue
-                        clock = Clock(state.get("wtime"), state.get("btime"), state.get("winc", 0), state.get("binc", 0))
-                        decision = player.choose(moves, base_fen, clock)
-                        if decision.move == "0000":
-                            continue
-                        if self.api.post(f"/api/bot/game/{game_id}/move/{decision.move}"):
-                            last_played = len(moves)
-                            log(f"game {game_id}: move {len(moves) // 2 + 1} {decision.move} "
-                                f"(depth {decision.depth}, {decision.seconds:.2f}s)")
-                    return
-                except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-                    log(f"game {game_id}: stream error {e}, reconnecting")
-                    time.sleep(2 + 2 * attempt)
+                    log(f"game {game_id}: stream ended before the game did, reconnecting")
+                except STREAM_ERRORS as e:
+                    log(f"game {game_id}: stream error {e!r}, reconnecting")
+                failures += 1
+                time.sleep(min(30, 2 * failures))
+            log(f"game {game_id}: giving up after {MAX_STREAM_FAILURES} failed reconnects in a row")
+        except Exception as e:
+            log(f"game {game_id}: stopped by an error: {e!r}")
+            raise
         finally:
             player.close()
+
+    def on_game_event(self, game_id: str, event: dict, player: Player, session: dict) -> bool:
+        """Handles one game stream event, playing a move when it is Kestrel's turn, and returns True once the game is over."""
+        kind = event.get("type")
+        if kind == "gameFull":
+            me = self.username.lower()
+            session["color"] = "white" if (event.get("white") or {}).get("id", "").lower() == me else "black"
+            initial = event.get("initialFen", "startpos")
+            session["base_fen"] = None if initial in ("startpos", "") else initial
+            opponent = event.get("black" if session["color"] == "white" else "white") or {}
+            log(f"game {game_id}: playing {session['color']} against {opponent.get('name', opponent.get('aiLevel', '?'))}")
+            if self.config.greeting and not session["greeted"]:
+                self.api.post(f"/api/bot/game/{game_id}/chat", {"room": "player", "text": self.config.greeting})
+                session["greeted"] = True
+            state = event.get("state", {})
+        elif kind == "gameState":
+            state = event
+        else:
+            return False
+
+        if state.get("status") not in ("started", "created"):
+            log(f"game {game_id}: finished ({state.get('status')}, winner {state.get('winner', 'none')})")
+            if self.config.goodbye:
+                self.api.post(f"/api/bot/game/{game_id}/chat", {"room": "player", "text": self.config.goodbye})
+            return True
+        moves = state.get("moves", "").split()
+        base_fen = session["base_fen"]
+        start_white = base_fen is None or base_fen.split()[1] == "w"
+        white_to_move = (len(moves) % 2 == 0) == start_white
+        if session["color"] is None or white_to_move != (session["color"] == "white") \
+                or len(moves) == session["last_played"]:
+            return False
+
+        clock = Clock(state.get("wtime"), state.get("btime"), state.get("winc", 0), state.get("binc", 0))
+        decision = player.choose(moves, base_fen, clock)
+        if decision.move == "0000":
+            return False
+        for attempt in range(MOVE_ATTEMPTS):
+            if self.api.post(f"/api/bot/game/{game_id}/move/{decision.move}"):
+                session["last_played"] = len(moves)
+                log(f"game {game_id}: move {len(moves) // 2 + 1} {decision.move} "
+                    f"(depth {decision.depth}, {decision.seconds:.2f}s)")
+                return False
+            time.sleep(1 + attempt)
+        log(f"game {game_id}: could not send {decision.move} after {MOVE_ATTEMPTS} tries")
+        return False
 
     def run(self) -> None:
         account = self.api.get_json("/api/account")
@@ -291,17 +315,24 @@ class Bot:
                     kind = event.get("type")
                     if kind == "challenge":
                         self.handle_challenge(event["challenge"])
+                    elif kind in ("challengeCanceled", "challengeDeclined"):
+                        self.release(event.get("challenge", {}).get("id", ""))
                     elif kind == "gameStart":
                         game = event.get("game", {})
-                        self.start_game(game.get("gameId") or game.get("id"))
+                        game_id = game.get("gameId") or game.get("id")
+                        self.start_game(game_id)
+                        self.release(game_id)
                     if self.stop.is_set():
                         break
             except urllib.error.HTTPError as e:
+                if e.code in (401, 403):
+                    raise SystemExit(f"Lichess rejected the token (HTTP {e.code}). Create a new bot:play token "
+                                     "and save it to the token file.")
                 wait = 60 if e.code == 429 else min(60, backoff)
                 log(f"event stream HTTP {e.code}, reconnecting in {wait}s")
                 time.sleep(wait)
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-                log(f"event stream lost ({e}), reconnecting in {backoff}s")
+            except STREAM_ERRORS as e:
+                log(f"event stream lost ({e!r}), reconnecting in {backoff}s")
                 time.sleep(backoff)
             backoff = min(60, backoff * 2)
 

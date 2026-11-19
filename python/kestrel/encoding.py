@@ -2,20 +2,15 @@
 
 import torch
 
-from .features import (  # noqa: F401
-    LEGACY_PLANES,
-    NUM_PLANES,
-    PIECE_CHARS,
-    POLICY_SIZE,
-    PROMO_CODES,
-    RECORD_BYTES,
-    RECORD_DTYPE,
-    fen_to_record,
-    read_records,
-    uci_to_squares,
-)
+from .features import NUM_PLANES, OPPONENT_FIRST
 
-_FLIP = torch.arange(64) ^ 56
+_FLIP: dict[torch.device, torch.Tensor] = {}
+
+
+def _flip(device: torch.device) -> torch.Tensor:
+    if device not in _FLIP:
+        _FLIP[device] = (torch.arange(64) ^ 56).to(device)
+    return _FLIP[device]
 
 
 def encode_planes(raw: torch.Tensor, num_planes: int = NUM_PLANES) -> torch.Tensor:
@@ -27,7 +22,7 @@ def encode_planes(raw: torch.Tensor, num_planes: int = NUM_PLANES) -> torch.Tens
     black = raw[:, 32].bool()
 
     # Mover Perspective
-    flipped = squares[:, _FLIP.to(device)]
+    flipped = squares[:, _flip(device)]
     squares = torch.where(black[:, None], flipped, squares)
     swapped = torch.where(squares == 0, squares, torch.where(squares <= 6, squares + 6, squares - 6))
     squares = torch.where(black[:, None], swapped, squares)
@@ -36,9 +31,7 @@ def encode_planes(raw: torch.Tensor, num_planes: int = NUM_PLANES) -> torch.Tens
 
     castling = raw[:, 33].long()
     bits = torch.stack([(castling >> i) & 1 for i in range(4)], dim=1)
-    own_first = torch.stack([bits[:, 0], bits[:, 1], bits[:, 2], bits[:, 3]], dim=1)
-    opp_first = torch.stack([bits[:, 2], bits[:, 3], bits[:, 0], bits[:, 1]], dim=1)
-    castle_planes = torch.where(black[:, None], opp_first, own_first).float()[:, :, None].expand(b, 4, 64)
+    castle_planes = torch.where(black[:, None], bits[:, OPPONENT_FIRST], bits).float()[:, :, None].expand(b, 4, 64)
 
     ep = raw[:, 34].long()
     ep_plane = torch.zeros(b, 64, device=device)
@@ -46,7 +39,7 @@ def encode_planes(raw: torch.Tensor, num_planes: int = NUM_PLANES) -> torch.Tens
     ep_plane[has_ep, 40 + ep[has_ep]] = 1.0
 
     stm_plane = black.float()[:, None].expand(b, 64)
-    ones = torch.ones(b, 64, device=device)
+    ones = stm_plane.new_ones(1, 1).expand(b, 64)
 
     # History Planes
     repeated = (raw[:, 44] >= 1).float()[:, None].expand(b, 64)
@@ -78,10 +71,3 @@ def encode_targets(raw: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Returns policy indices and WDL class targets (0 loss, 1 draw, 2 win) for raw records."""
     idx = policy_index(raw[:, 36], raw[:, 37], raw[:, 38], raw[:, 32].bool())
     return idx, raw[:, 35].long()
-
-
-def legal_indices(moves: list[str], black: bool) -> torch.Tensor:
-    """Returns policy indices for a list of legal UCI moves in one position."""
-    sq = torch.tensor([uci_to_squares(m) for m in moves], dtype=torch.long)
-    flag = torch.full((len(moves),), bool(black))
-    return policy_index(sq[:, 0], sq[:, 1], sq[:, 2], flag)

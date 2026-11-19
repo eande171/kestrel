@@ -7,18 +7,19 @@ from pathlib import Path
 
 import torch
 
-from .engine_client import Engine
+from .engine_client import Engine, result_for
 from .inference import TorchEvaluator, greedy_move
+from .match import pgn
 from .model import load_model
 from .search import NetSearch
 
-RESULTS = {
-    "checkmate_white": ("1-0", "White wins by checkmate"),
-    "checkmate_black": ("0-1", "Black wins by checkmate"),
-    "stalemate": ("1/2-1/2", "Draw by stalemate"),
-    "repetition": ("1/2-1/2", "Draw by threefold repetition"),
-    "fifty_moves": ("1/2-1/2", "Draw by the fifty move rule"),
-    "insufficient_material": ("1/2-1/2", "Draw, neither side can mate"),
+ENDINGS = {
+    "checkmate_white": "White wins by checkmate",
+    "checkmate_black": "Black wins by checkmate",
+    "stalemate": "Draw by stalemate",
+    "repetition": "Draw by threefold repetition",
+    "fifty_moves": "Draw by the fifty move rule",
+    "insufficient_material": "Draw, neither side can mate",
 }
 HELP = "Type moves like e4, Nf3, exd5, O-O, e8=Q or e2e4. Commands: undo, flip, moves, resign, help."
 
@@ -48,24 +49,6 @@ def render(fen: str, white_bottom: bool, last: str | None) -> str:
     return "\n".join(out)
 
 
-def pgn(sans: list[str], result: str, human_white: bool, label: str) -> str:
-    white, black = ("You", label) if human_white else (label, "You")
-    body = []
-    for i, san in enumerate(sans):
-        if i % 2 == 0:
-            body.append(f"{i // 2 + 1}.")
-        body.append(san)
-    body.append(result)
-    headers = [
-        '[Event "Kestrel test game"]',
-        f'[Date "{time.strftime("%Y.%m.%d")}"]',
-        f'[White "{white}"]',
-        f'[Black "{black}"]',
-        f'[Result "{result}"]',
-    ]
-    return "\n".join(headers) + "\n\n" + " ".join(body) + "\n"
-
-
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run", default="runs/rep")
@@ -93,8 +76,8 @@ def main(argv=None) -> None:
             state = engine.state()
             print(render(state.fen, white_bottom, moves[-1] if moves else None))
             if state.status != "ongoing":
-                result, text = RESULTS[state.status]
-                print(f"\n{text}.")
+                result = result_for(state.status)
+                print(f"\n{ENDINGS.get(state.status, 'Game over')}.")
                 break
             white_to_move = state.fen.split()[1] == "w"
             if white_to_move == human_white:
@@ -144,7 +127,8 @@ def main(argv=None) -> None:
     game_dir = Path(args.run).parent / "games"
     game_dir.mkdir(parents=True, exist_ok=True)
     path = game_dir / f"game_{time.strftime('%Y%m%d_%H%M%S')}.pgn"
-    path.write_text(pgn(sans, result, human_white, label))
+    white, black = ("You", label) if human_white else (label, "You")
+    path.write_text(pgn(sans, white, black, result, event="Kestrel test game"))
     print(f"\nGame saved to {path}. You can paste it into lichess.org/analysis to review it.")
 
 

@@ -85,12 +85,7 @@ impl Game {
     }
 
     pub fn outcome(&self) -> Outcome {
-        let mut any = false;
-        self.board.generate_moves(|_| {
-            any = true;
-            true
-        });
-        if !any {
+        if !any_move(&self.board) {
             return if self.board.checkers().is_empty() {
                 Outcome::Stalemate
             } else {
@@ -109,6 +104,15 @@ impl Game {
         }
         Outcome::Ongoing
     }
+}
+
+pub fn any_move(board: &Board) -> bool {
+    let mut any = false;
+    board.generate_moves(|_| {
+        any = true;
+        true
+    });
+    any
 }
 
 pub fn legal_moves(board: &Board) -> Vec<Move> {

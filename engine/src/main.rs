@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Instant;
 
 use kestrel::game::{ascii_board, Game, Outcome};
@@ -30,13 +31,10 @@ fn main() {
         std::process::exit(2);
     };
     let opts = parse_opts(&args[1..]);
-    let get = |key: &str, default: u64| -> u64 {
-        opts.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
-    };
 
     match command.as_str() {
-        "uci" => uci::run(get("depth", 3) as u32, get("seed", 1)),
-        "play" => play(get("depth", 3) as u32, opts.get("color").map(String::as_str) != Some("black")),
+        "uci" => uci::run(get_opt(&opts, "depth", 3), get_opt(&opts, "seed", 1)),
+        "play" => play(get_opt(&opts, "depth", 3), opts.get("color").map(String::as_str) != Some("black")),
         "perft" => {
             let depth: u32 = args.get(1).and_then(|d| d.parse().ok()).unwrap_or(5);
             let board = match opts.get("fen") {
@@ -48,7 +46,7 @@ fn main() {
             let secs = start.elapsed().as_secs_f64();
             println!("perft {depth}: {nodes} nodes in {secs:.2}s ({:.1} Mnps)", nodes as f64 / secs / 1e6);
         }
-        "bench" => bench(get("depth", 4) as u32),
+        "bench" => bench(get_opt(&opts, "depth", 4)),
         "prep" => {
             let Some(input) = opts.get("input") else {
                 eprintln!("prep needs --input");
@@ -58,16 +56,16 @@ fn main() {
             let cfg = PrepConfig {
                 input: input.clone(),
                 out_dir: opts.get("out").map(PathBuf::from).unwrap_or(d.out_dir),
-                min_elo: get("min-elo", d.min_elo as u64) as u32,
-                min_seconds: get("min-seconds", d.min_seconds as u64) as u32,
-                min_plies: get("min-plies", d.min_plies as u64) as u32,
-                skip_plies: get("skip-plies", d.skip_plies as u64) as u32,
-                positions: get("positions", d.positions),
-                shards: get("shards", d.shards as u64).max(1) as u32,
-                val_every: get("val-every", d.val_every),
-                common_plies: get("common-plies", d.common_plies as u64) as u32,
-                common_cap: get("common-cap", d.common_cap as u64) as u32,
-                seed: get("seed", d.seed),
+                min_elo: get_opt(&opts, "min-elo", d.min_elo),
+                min_seconds: get_opt(&opts, "min-seconds", d.min_seconds),
+                min_plies: get_opt(&opts, "min-plies", d.min_plies),
+                skip_plies: get_opt(&opts, "skip-plies", d.skip_plies),
+                positions: get_opt(&opts, "positions", d.positions),
+                shards: get_opt(&opts, "shards", d.shards).max(1),
+                val_every: get_opt(&opts, "val-every", d.val_every),
+                common_plies: get_opt(&opts, "common-plies", d.common_plies),
+                common_cap: get_opt(&opts, "common-cap", d.common_cap),
+                seed: get_opt(&opts, "seed", d.seed),
             };
             eprintln!("[prep] {cfg:?}");
             if let Err(e) = prep::run(&cfg) {
@@ -80,6 +78,10 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+fn get_opt<T: FromStr>(opts: &HashMap<String, String>, key: &str, default: T) -> T {
+    opts.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 fn parse_opts(args: &[String]) -> HashMap<String, String> {
@@ -130,7 +132,7 @@ fn play(depth: u32, human_white: bool) {
                 println!("not a legal move: {text}");
             }
         } else {
-            let result = engine.search(&game.board);
+            let result = engine.search(&game.board, depth);
             let mv = result.best.expect("ongoing game has a move");
             println!("baseline plays {} (score {} cp, {} nodes)", game.uci(mv), result.score, result.nodes);
             game.play(mv).expect("search returns legal moves");
@@ -150,7 +152,7 @@ fn bench(depth: u32) {
         let start = Instant::now();
         let mut nodes = 0;
         for fen in fens {
-            nodes += engine.search(&Board::from_fen(fen, false).unwrap()).nodes;
+            nodes += engine.search(&Board::from_fen(fen, false).unwrap(), d).nodes;
         }
         let secs = start.elapsed().as_secs_f64();
         println!("depth {d}: {nodes} nodes, {:.3}s for {} positions ({:.2}s per move)", secs, fens.len(), secs / fens.len() as f64);

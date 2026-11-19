@@ -31,31 +31,40 @@ class Child:
     fen: str
 
 
-class Engine:
-    def __init__(self, path: Path = DEFAULT_ENGINE, depth: int = 2, seed: int = 1):
-        self.proc = subprocess.Popen(
-            [str(path), "uci", "--depth", str(depth), "--seed", str(seed)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-        self._send("isready")
-        self._read_until("readyok")
+class EngineError(ValueError):
+    """Raised when the engine rejects a position or command."""
+
+
+def result_for(status: str) -> str:
+    """Returns the PGN result for an engine status, counting anything but checkmate as a draw."""
+    return {"checkmate_white": "1-0", "checkmate_black": "0-1"}.get(status, "1/2-1/2")
+
+
+class UciProcess:
+    """Runs an engine process that speaks UCI style lines over stdin and stdout."""
+
+    def __init__(self, args: list[str]):
+        self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
 
     def _send(self, line: str) -> None:
         self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()
 
     def _read_until(self, prefix: str) -> list[str]:
-        lines = []
+        """Returns the lines up to one starting with prefix, raising EngineError afterwards if one reported an error."""
+        lines, error = [], None
         while True:
             line = self.proc.stdout.readline()
             if not line:
                 raise RuntimeError("engine exited")
             line = line.strip()
+            if line.startswith("info string error "):
+                error = line[len("info string error "):]
+                continue
             lines.append(line)
             if line.startswith(prefix):
+                if error:
+                    raise EngineError(f"engine rejected a command: {error}")
                 return lines
 
     def set_option(self, name: str, value) -> None:
@@ -64,6 +73,33 @@ class Engine:
     def position(self, moves: list[str], fen: str | None = None) -> None:
         start = f"fen {fen}" if fen else "startpos"
         self._send(f"position {start} moves {' '.join(moves)}" if moves else f"position {start}")
+
+    def go(self, limits: str) -> str:
+        """Returns the best move for the current position under UCI go limits such as 'depth 3'."""
+        self._send(f"go {limits}")
+        return self._read_until("bestmove")[-1].split()[1]
+
+    def close(self) -> None:
+        try:
+            self._send("quit")
+            self.proc.wait(timeout=5)
+        except Exception:
+            self.proc.kill()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+class Engine(UciProcess):
+    """Kestrel's Rust rules engine and material baseline."""
+
+    def __init__(self, path: Path = DEFAULT_ENGINE, depth: int = 2, seed: int = 1):
+        super().__init__([str(path), "uci", "--depth", str(depth), "--seed", str(seed)])
+        self._send("isready")
+        self._read_until("readyok")
 
     def state(self) -> State:
         self._send("state")
@@ -97,18 +133,4 @@ class Engine:
         return None if parts[1] == "none" else (parts[1], parts[2])
 
     def best_move(self, depth: int) -> str:
-        self._send(f"go depth {depth}")
-        return self._read_until("bestmove")[-1].split()[1]
-
-    def close(self) -> None:
-        try:
-            self._send("quit")
-            self.proc.wait(timeout=5)
-        except Exception:
-            self.proc.kill()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
+        return self.go(f"depth {depth}")

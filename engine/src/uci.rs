@@ -48,10 +48,7 @@ pub fn run(default_depth: u32, seed: u64) {
                     .and_then(|i| tokens.get(i + 1))
                     .and_then(|d| d.parse().ok())
                     .unwrap_or(engine.depth);
-                let saved = engine.depth;
-                engine.depth = depth;
-                let result = engine.search(&game.board);
-                engine.depth = saved;
+                let result = engine.search(&game.board, depth);
                 match result.best {
                     Some(mv) => format!(
                         "info depth {depth} score cp {} nodes {}\nbestmove {}",

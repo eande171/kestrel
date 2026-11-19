@@ -19,6 +19,7 @@ from kestrel.engine_client import Engine  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 TOKEN = "test-token-not-real"
 PLY_LIMIT = 40
+DROP_AFTER_PLIES = 8
 
 
 def challenge(cid: str, user: str, variant: str, speed: str, limit: int, increment: int) -> dict:
@@ -48,6 +49,7 @@ class MockLichess:
         self.illegal: list[str] = []
         self.moves: list[str] = []
         self.bot_moves = 0
+        self.game_streams = 0
         self.finished = threading.Event()
         self.engine = Engine(depth=1, seed=3)
         self.lock = threading.Lock()
@@ -55,6 +57,7 @@ class MockLichess:
             challenge("c960", "alice", "chess960", "blitz", 180, 2),
             challenge("cbullet", "bob", "standard", "bullet", 60, 0),
             challenge("cblitz", "carol", "standard", "blitz", 180, 2),
+            challenge("cbusy", "dave", "standard", "blitz", 180, 2),
         ):
             self.events.put(event)
 
@@ -136,6 +139,8 @@ def make_handler(mock: MockLichess):
                         self.write_line(None)
                 return
             if path == "/api/bot/game/stream/game1":
+                mock.game_streams += 1
+                first_stream = mock.game_streams == 1
                 self.start_stream()
                 full = {"type": "gameFull", "id": "game1", "variant": {"key": "standard"}, "speed": "blitz",
                         "rated": False, "white": {"id": "kestrelbot", "name": "KestrelBot", "title": "BOT"},
@@ -149,6 +154,8 @@ def make_handler(mock: MockLichess):
                         self.write_line(None)
                         continue
                     self.write_line(event)
+                    if first_stream and len(event["moves"].split()) >= DROP_AFTER_PLIES:
+                        return
                     if event["status"] != "started":
                         time.sleep(0.5)
                         mock.finished.set()
@@ -218,12 +225,15 @@ def main() -> None:
     assert mock.declined.get("c960") == "variant", mock.declined
     assert mock.declined.get("cbullet") == "tooFast", mock.declined
     assert mock.accepted == ["cblitz"], mock.accepted
+    assert mock.declined.get("cbusy") == "later", mock.declined
+    assert mock.game_streams == 2, f"{mock.game_streams} game stream connections, expected one reconnect"
     assert not mock.illegal, f"illegal moves sent: {mock.illegal}"
     assert mock.bot_moves >= 5, f"only {mock.bot_moves} bot moves"
     assert len(mock.chat) == 2, mock.chat
     assert not any(TOKEN in line for line in output), "token appeared in the bot log"
-    print(f"ok: declined chess960 (variant) and bullet (tooFast), accepted blitz, "
-          f"{mock.bot_moves} legal bot moves over {len(mock.moves)} plies, greeting and goodbye sent, token never logged")
+    print(f"ok: declined chess960 (variant), bullet (tooFast) and a second blitz while busy (later), accepted blitz, "
+          f"reconnected after a dropped stream, {mock.bot_moves} legal bot moves over {len(mock.moves)} plies, "
+          f"greeting and goodbye sent, token never logged")
 
 
 if __name__ == "__main__":

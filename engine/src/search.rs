@@ -1,6 +1,6 @@
-use cozy_chess::{Board, Color, Move, Piece};
+use cozy_chess::{Board, Color, Move, Piece, Rank};
 
-use crate::game::legal_moves;
+use crate::game::{any_move, legal_moves};
 
 pub const MATE: i32 = 30_000;
 const PIECE_VALUES: [i32; 6] = [100, 320, 330, 500, 900, 0];
@@ -36,7 +36,7 @@ impl Baseline {
         self.rng
     }
 
-    pub fn search(&mut self, board: &Board) -> SearchResult {
+    pub fn search(&mut self, board: &Board, depth: u32) -> SearchResult {
         self.nodes = 0;
         let mut moves = legal_moves(board);
         if moves.is_empty() {
@@ -49,7 +49,7 @@ impl Baseline {
         }
         order_moves(board, &mut moves);
 
-        let depth = self.depth.max(1);
+        let depth = depth.max(1);
         let mut best = moves[0];
         let mut alpha = -MATE - 1;
         for mv in moves {
@@ -66,8 +66,9 @@ impl Baseline {
 
     fn negamax(&mut self, board: &Board, depth: u32, ply: i32, mut alpha: i32, beta: i32) -> i32 {
         self.nodes += 1;
-        let mut moves = legal_moves(board);
-        if moves.is_empty() {
+        let mut moves = if depth == 0 { Vec::new() } else { legal_moves(board) };
+        let has_moves = if depth == 0 { any_move(board) } else { !moves.is_empty() };
+        if !has_moves {
             return if board.checkers().is_empty() { 0 } else { -MATE + ply };
         }
         if board.halfmove_clock() >= 100 {
@@ -105,10 +106,13 @@ impl Baseline {
             alpha = stand_pat;
         }
         let them = board.colors(!board.side_to_move());
-        let mut captures: Vec<Move> = legal_moves(board)
-            .into_iter()
-            .filter(|mv| them.has(mv.to) || mv.promotion == Some(Piece::Queen))
-            .collect();
+        let back_ranks = Rank::First.bitboard() | Rank::Eighth.bitboard();
+        let mut captures: Vec<Move> = Vec::new();
+        board.generate_moves(|mut pm| {
+            pm.to &= if pm.piece == Piece::Pawn { them | back_ranks } else { them };
+            captures.extend(pm.into_iter().filter(|mv| them.has(mv.to) || mv.promotion == Some(Piece::Queen)));
+            false
+        });
         order_moves(board, &mut captures);
         for mv in captures {
             let mut child = board.clone();
