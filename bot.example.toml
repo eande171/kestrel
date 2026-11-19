@@ -7,7 +7,7 @@ base_url = "https://lichess.org"
 [engine]
 model = "model.onnx"
 threads = 2
-max_depth = 8
+max_depth = 10
 width = 6
 randomness = 10
 reserve_seconds = 1.0

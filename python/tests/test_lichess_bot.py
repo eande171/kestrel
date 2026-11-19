@@ -220,7 +220,7 @@ def main() -> None:
     (folder / "token.txt").write_text(TOKEN)
     config = (ROOT / "bot.example.toml").read_text()
     config = config.replace('base_url = "https://lichess.org"', f'base_url = "http://127.0.0.1:{port}"')
-    config = config.replace("max_depth = 8", "max_depth = 4")
+    config = config.replace("max_depth = 10", "max_depth = 4")
     config = config.replace("enabled = false", "enabled = true").replace("idle_minutes = 2.0", "idle_minutes = 0.02")
     config = config.replace('model = "model.onnx"', f'model = "{(ROOT / "runs/rep/model.onnx").as_posix()}"')
     (folder / "bot.toml").write_text(config)

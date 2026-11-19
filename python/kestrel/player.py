@@ -9,7 +9,7 @@ from .engine_client import Engine
 from .inference import greedy_move
 from .search import MATE, NetSearch
 
-MAX_DEPTH = 8
+MAX_DEPTH = 10
 
 
 @dataclass

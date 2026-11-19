@@ -78,7 +78,7 @@ D:\chess-venv\Scripts\python.exe -m kestrel.uci --model runs/rep/model.onnx --th
 ```
 
 - Needs `numpy`, `onnxruntime`, an exported model and the Rust `kestrel` binary (found next to the repo, or set `KESTREL_ENGINE`). `KESTREL_MODEL` and `KESTREL_THREADS` set the defaults.
-- UCI options: `Depth` (the deepest search allowed, 0 to 8, default 4), `Width` (moves searched at each step, default 6) and `Randomness` (in thousandths; root moves this close to the best are picked at random, default 10, so it does not repeat the same game).
+- UCI options: `Depth` (the deepest search allowed, 0 to 10, default 4), `Width` (moves searched at each step, default 6) and `Randomness` (in thousandths; root moves this close to the best are picked at random, default 10, so it does not repeat the same game).
 - Time management: from `wtime`/`btime`/`winc`/`binc` it allows about a thirtieth of the remaining time plus most of the increment. With a clock it searches depth 2, then 3 and so on up to `Depth`, keeps the result of the deepest search that finished, and stops at the deadline even in the middle of a search. It does not start another depth that would probably not finish, judging by how much longer each depth took than the one before. `go depth N` searches exactly that depth.
 - Search: negamax with alpha-beta pruning over the policy's top moves, with value head scores at the leaves. Moves are tried in policy order, except that the best move found by the previous, shallower search goes first, which prunes more. Pruning returns exactly the same move and score as searching the whole tree (checked on 260 positions at depths 2 to 5). Network outputs are cached by position, so transpositions, the deepening steps and the next move's search reuse them.
 - Forcing moves: up to 3 captures or promotions outside the policy's top moves are always searched, and a leaf reached by a capture, promotion or pawn push to the seventh rank keeps following forcing replies (up to 4 at each step, 4 extra plies at most) until the position is quiet, standing pat on the value head. This roughly doubles the positions searched at a given depth, but won 22-4-14 against the search without it at 0.5 s per move, reaching depth 3.8 on average against 4.2.
@@ -110,7 +110,7 @@ The bot looks for the config in this order: `--config <path>`, the `KESTREL_BOT_
 | `lichess` | `token_file` | file holding only the token. `LICHESS_BOT_TOKEN` in the environment overrides it |
 | `lichess` | `base_url` | `https://lichess.org` |
 | `engine` | `model`, `threads` | ONNX model and CPU threads |
-| `engine` | `max_depth`, `width` | deepest search, up to 8; with a clock it searches as deep as the time allows up to this (on the Stockfish scale 4 is about 1975, 5 about 2160 and 6 about 2360) and moves searched at each step |
+| `engine` | `max_depth`, `width` | deepest search, up to 10 (8 takes about 10 s and each level about 3 times longer, so 9 and 10 only come into play in rapid and slower); with a clock it searches as deep as the time allows up to this (on the Stockfish scale 4 is about 1975, 5 about 2160 and 6 about 2360) and moves searched at each step |
 | `engine` | `randomness` | thousandths of a point; root moves this close to the best are picked at random |
 | `engine` | `reserve_seconds` | seconds kept back from the clock for network lag |
 | `engine` | `ponder` | search on the opponent's time, so whatever they reply, much of the next search is already cached. After 8 seconds of pondering the next search is about twice as fast. Uses the CPU for the whole game |
