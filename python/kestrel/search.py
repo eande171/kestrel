@@ -15,9 +15,49 @@ MATE = 1.0
 CACHE_LIMIT = 200_000
 DEFAULT_GROWTH = 3.0
 
+# Endgame Tuning
+PIECE_POINTS = {"p": 1, "n": 3, "b": 3, "r": 5, "q": 9}
+MOP_UP_WEIGHT = 0.05
+MOP_UP_LEAD = 4
+MOP_UP_DEFENDER_MAX = 5
+AHEAD_VALUE = 0.5
+DRAW_PENALTY = 0.1
+
 
 class SearchTimeout(Exception):
     pass
+
+
+def mop_up(fen: str) -> float:
+    """Returns a bonus for the side to move when it is well ahead in a sparse endgame, for cornering the losing king."""
+    board, side = fen.split()[:2]
+    material = {"w": 0, "b": 0}
+    pieces = {"w": 0, "b": 0}
+    kings = {}
+    rank = 7
+    file = 0
+    for ch in board:
+        if ch == "/":
+            rank, file = rank - 1, 0
+        elif ch.isdigit():
+            file += int(ch)
+        else:
+            colour = "w" if ch.isupper() else "b"
+            if ch.lower() == "k":
+                kings[colour] = (file, rank)
+            else:
+                material[colour] += PIECE_POINTS[ch.lower()]
+                pieces[colour] += ch.lower() != "p"
+            file += 1
+    strong = "w" if material["w"] > material["b"] else "b"
+    weak = "b" if strong == "w" else "w"
+    if material[strong] - material[weak] < MOP_UP_LEAD or material[weak] > MOP_UP_DEFENDER_MAX:
+        return 0.0
+    (wf, wr), (sf, sr) = kings[weak], kings[strong]
+    edge = max(3 - wf, wf - 4) + max(3 - wr, wr - 4)
+    apart = abs(wf - sf) + abs(wr - sr)
+    bonus = MOP_UP_WEIGHT * (0.6 * edge / 6 + 0.4 * (14 - apart) / 14)
+    return bonus if side == strong else -bonus
 
 
 def cache_key(fen: str, repetitions: int) -> tuple[str, int]:
@@ -39,6 +79,9 @@ class NetSearch:
         self.halt: Callable[[], bool] | None = None
         self.last_score = 0.0
         self.completed_depth = 0
+        self.root_depth = 0
+        self.draw_score = 0.0
+        self.endgame_tuning = True
         self.nodes = 0
         self.priors: dict[tuple[str, int], np.ndarray] = {}
         self.values: dict[tuple[str, int], float] = {}
@@ -101,6 +144,9 @@ class NetSearch:
         if order:
             selected.sort(key=lambda c: order.index(c.move) if c.move in order else len(order))
         leaf_values = self._leaf_values(selected) if depth == 1 else {}
+        self.root_depth = depth
+        ahead = self.endgame_tuning and self.values[cache_key(fen, repetitions)] > AHEAD_VALUE
+        self.draw_score = -DRAW_PENALTY if ahead else 0.0
 
         # Root Window
         scored, best = [], -math.inf
@@ -134,12 +180,13 @@ class NetSearch:
             self.best_child[cache_key(fen, repetitions)] = best_move
         return best
 
-    @staticmethod
-    def _terminal(child: Child, depth: int) -> float | None:
+    def _terminal(self, child: Child, depth: int) -> float | None:
+        """Returns the score of a finished child for the side that moved into it, or None if the game goes on."""
         if child.status.startswith("checkmate"):
             return MATE + 0.01 * depth
         if child.status != "ongoing":
-            return 0.0
+            root_side_moved = (self.root_depth - depth) % 2 == 0
+            return self.draw_score if root_side_moved else -self.draw_score
         return None
 
     def _expand(self, moves: list[str], fen: str, repetitions: int) -> list[Child]:
@@ -170,4 +217,7 @@ class NetSearch:
             _, values = self.evaluator(np.stack([fen_to_record(c.fen, c.repetitions) for c in missing]))
             for c, v in zip(missing, values):
                 self.values[cache_key(c.fen, c.repetitions)] = float(v)
-        return {c.move: self.values[cache_key(c.fen, c.repetitions)] for c in live}
+        if not self.endgame_tuning:
+            return {c.move: self.values[cache_key(c.fen, c.repetitions)] for c in live}
+        return {c.move: min(max(self.values[cache_key(c.fen, c.repetitions)] + mop_up(c.fen), -0.999), 0.999)
+                for c in live}
