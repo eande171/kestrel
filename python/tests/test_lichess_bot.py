@@ -61,6 +61,7 @@ class MockLichess:
             challenge("cbullet", "bob", "standard", "bullet", 60, 0),
             challenge("cblitz", "carol", "standard", "blitz", 180, 2),
             challenge("cbusy", "dave", "standard", "blitz", 180, 2),
+            challenge("stale1", "kestrelbot", "standard", "blitz", 180, 2),
         ):
             self.events.put(event)
 
@@ -234,7 +235,7 @@ def main() -> None:
     finished = mock.finished.wait(timeout=300)
     matchmade = mock.matchmade.wait(timeout=15)
     deadline = time.time() + 40
-    while not mock.cancelled and time.time() < deadline:
+    while "out1" not in mock.cancelled and time.time() < deadline:
         time.sleep(0.5)
     bot.terminate()
     bot.wait(timeout=10)
@@ -256,10 +257,10 @@ def main() -> None:
     assert all(name.lower() == "goodbot" for name, _ in mock.sent_challenges), mock.sent_challenges
     _, form = mock.sent_challenges[0]
     assert form["rated"] == "true" and (form["clock.limit"], form["clock.increment"]) in (("180", "2"), ("300", "3")), form
-    assert mock.cancelled == ["out1"], f"unanswered challenge not cancelled: {mock.cancelled}"
+    assert mock.cancelled == ["stale1", "out1"], f"stale or unanswered challenge not cancelled: {mock.cancelled}"
     print(f"ok: declined chess960 (variant), bullet (tooFast) and a second blitz while busy (later), accepted blitz, "
           f"reconnected after a dropped stream, {mock.bot_moves} legal bot moves over {len(mock.moves)} plies, "
-          f"greeting and goodbye sent, token never logged, then challenged the one online bot in rating range and cancelled it when unanswered")
+          f"greeting and goodbye sent, token never logged, then challenged the one online bot in rating range and cancelled it when unanswered, after cancelling one left from an earlier run")
 
 
 if __name__ == "__main__":

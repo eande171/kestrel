@@ -239,6 +239,11 @@ class Bot:
 
     def handle_challenge(self, challenge: dict) -> None:
         if (challenge.get("challenger") or {}).get("id", "").lower() == self.username.lower():
+            with self.lock:
+                ours = challenge.get("id") in self.reserved
+            if not ours:
+                log(f"cancelling challenge {challenge.get('id')} left over from an earlier run")
+                self.api.post(f"/api/challenge/{challenge.get('id')}/cancel")
             return
         reason = self.decline_reason(challenge)
         who = (challenge.get("challenger") or {}).get("name", "?")
@@ -328,7 +333,7 @@ class Bot:
         if reply and reply.get("id"):
             with self.lock:
                 self.reserved[reply["id"]] = time.time()
-            log(f"matchmaking: challenged {opponent['username']} "
+            log(f"matchmaking: challenge {reply['id']} to {opponent['username']} "
                 f"({opponent['perfs'][speed]['rating']}) to {control} {'rated' if c.matchmaking_rated else 'casual'}")
             threading.Timer(RESERVE_SECONDS, self.cancel_unanswered, args=(reply["id"],)).start()
 
