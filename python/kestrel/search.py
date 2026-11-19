@@ -22,6 +22,9 @@ MOP_UP_LEAD = 4
 MOP_UP_DEFENDER_MAX = 5
 AHEAD_VALUE = 0.5
 DRAW_PENALTY = 0.1
+CONVERSION_SCALE = 0.85
+CONVERSION_WEIGHT = 0.01
+CONVERSION_CAP = 0.08
 
 # Forcing Move Extensions
 EXTRA_FORCING = 3
@@ -40,11 +43,10 @@ def is_forcing(child: Child, white_moved: bool) -> bool:
     return child.san[0] in "abcdefgh" and child.move[3] == ("7" if white_moved else "2")
 
 
-def mop_up(fen: str) -> float:
-    """Returns a bonus for the side to move when it is well ahead in a sparse endgame, for cornering the losing king."""
+def material_and_kings(fen: str) -> tuple[dict[str, int], dict[str, tuple[int, int]], str]:
+    """Returns each side's material in pawns, each king's file and rank, and the side to move."""
     board, side = fen.split()[:2]
     material = {"w": 0, "b": 0}
-    pieces = {"w": 0, "b": 0}
     kings = {}
     rank = 7
     file = 0
@@ -59,8 +61,23 @@ def mop_up(fen: str) -> float:
                 kings[colour] = (file, rank)
             else:
                 material[colour] += PIECE_POINTS[ch.lower()]
-                pieces[colour] += ch.lower() != "p"
             file += 1
+    return material, kings, side
+
+
+def endgame_adjusted(fen: str, value: float) -> float:
+    """Returns a value head score plus the mop-up bonus and, once the position is decided, a small material tie-break."""
+    material, kings, side = material_and_kings(fen)
+    other = "b" if side == "w" else "w"
+    score = value + mop_up(material, kings, side)
+    if abs(value) > AHEAD_VALUE:
+        lead = material[side] - material[other]
+        score = CONVERSION_SCALE * score + max(-CONVERSION_CAP, min(CONVERSION_CAP, CONVERSION_WEIGHT * lead))
+    return min(max(score, -0.999), 0.999)
+
+
+def mop_up(material: dict[str, int], kings: dict[str, tuple[int, int]], side: str) -> float:
+    """Returns a bonus for the side to move when it is well ahead in a sparse endgame, for cornering the losing king."""
     strong = "w" if material["w"] > material["b"] else "b"
     weak = "b" if strong == "w" else "w"
     if material[strong] - material[weak] < MOP_UP_LEAD or material[weak] > MOP_UP_DEFENDER_MAX:
@@ -145,7 +162,7 @@ class NetSearch:
     def _pick(self, scored: list[tuple[float, str]]) -> str:
         top = max(scored, key=lambda item: item[0])
         pool = [top]
-        if self.randomness > 0 and top[0] < MATE:
+        if self.randomness > 0 and top[0] < AHEAD_VALUE:
             pool = [item for item in scored if item[0] >= top[0] - self.randomness]
         self.last_score, choice = self.rng.choice(pool)
         return choice
@@ -258,9 +275,7 @@ class NetSearch:
 
     def _adjusted_value(self, child: Child) -> float:
         value = self.values[cache_key(child.fen, child.repetitions)]
-        if not self.endgame_tuning:
-            return value
-        return min(max(value + mop_up(child.fen), -0.999), 0.999)
+        return endgame_adjusted(child.fen, value) if self.endgame_tuning else value
 
     def _leaf_values(self, children: list[Child]) -> dict[str, float]:
         """Returns value head scores for the ongoing children, evaluating the uncached ones in one batch."""
