@@ -51,6 +51,8 @@ class MockLichess:
         self.bot_moves = 0
         self.game_streams = 0
         self.finished = threading.Event()
+        self.matchmade = threading.Event()
+        self.sent_challenges: list[tuple[str, dict]] = []
         self.engine = Engine(depth=1, seed=3)
         self.lock = threading.Lock()
         for event in (
@@ -129,7 +131,14 @@ def make_handler(mock: MockLichess):
                 return
             path = urlparse(self.path).path
             if path == "/api/account":
-                return self.json_reply({"id": "kestrelbot", "username": "KestrelBot", "title": "BOT"})
+                return self.json_reply({"id": "kestrelbot", "username": "KestrelBot", "title": "BOT",
+                                        "perfs": {"blitz": {"rating": 2000, "games": 40}}})
+            if path == "/api/bot/online":
+                self.start_stream()
+                for name, rating in (("KestrelBot", 2000), ("FarBot", 2900), ("GoodBot", 2050), ("RapidOnly", None)):
+                    perfs = {"blitz": {"rating": rating, "games": 50}} if rating else {"rapid": {"rating": 2000}}
+                    self.write_line({"id": name.lower(), "username": name, "title": "BOT", "perfs": perfs})
+                return
             if path == "/api/stream/event":
                 self.start_stream()
                 while not mock.finished.is_set():
@@ -138,11 +147,11 @@ def make_handler(mock: MockLichess):
                     except queue.Empty:
                         self.write_line(None)
                 return
-            if path == "/api/bot/game/stream/game1":
+            if path == "/api/bot/game/stream/cblitz":
                 mock.game_streams += 1
                 first_stream = mock.game_streams == 1
                 self.start_stream()
-                full = {"type": "gameFull", "id": "game1", "variant": {"key": "standard"}, "speed": "blitz",
+                full = {"type": "gameFull", "id": "cblitz", "variant": {"key": "standard"}, "speed": "blitz",
                         "rated": False, "white": {"id": "kestrelbot", "name": "KestrelBot", "title": "BOT"},
                         "black": {"id": "carol", "name": "Carol", "title": None}, "initialFen": "startpos",
                         "clock": {"initial": 180000, "increment": 2000}, "state": mock.state_event()}
@@ -168,17 +177,21 @@ def make_handler(mock: MockLichess):
             length = int(self.headers.get("Content-Length", 0))
             form = {k: v[0] for k, v in parse_qs(self.rfile.read(length).decode()).items()}
             parts = urlparse(self.path).path.strip("/").split("/")
+            if parts[:2] == ["api", "challenge"] and len(parts) == 3:
+                mock.sent_challenges.append((parts[2], form))
+                mock.matchmade.set()
+                return self.json_reply({"id": "out1", "status": "created", "direction": "out"})
             if parts[:2] == ["api", "challenge"] and parts[3] == "decline":
                 mock.declined[parts[2]] = form.get("reason", "")
                 return self.json_reply({"ok": True})
             if parts[:2] == ["api", "challenge"] and parts[3] == "accept":
                 mock.accepted.append(parts[2])
-                mock.events.put({"type": "gameStart", "game": {"gameId": "game1", "id": "game1", "color": "white"}})
+                mock.events.put({"type": "gameStart", "game": {"gameId": "cblitz", "id": "cblitz", "color": "white"}})
                 return self.json_reply({"ok": True})
-            if parts[:4] == ["api", "bot", "game", "game1"] and parts[4] == "move":
+            if parts[:4] == ["api", "bot", "game", "cblitz"] and parts[4] == "move":
                 ok = mock.bot_moved(parts[5])
                 return self.json_reply({"ok": ok} if ok else {"error": "illegal"}, 200 if ok else 400)
-            if parts[:4] == ["api", "bot", "game", "game1"] and parts[4] == "chat":
+            if parts[:4] == ["api", "bot", "game", "cblitz"] and parts[4] == "chat":
                 mock.chat.append(form.get("text", ""))
                 return self.json_reply({"ok": True})
             self.send_error(404)
@@ -203,6 +216,7 @@ def main() -> None:
     config = (ROOT / "bot.example.toml").read_text()
     config = config.replace('base_url = "https://lichess.org"', f'base_url = "http://127.0.0.1:{port}"')
     config = config.replace("max_depth = 8", "max_depth = 4")
+    config = config.replace("enabled = false", "enabled = true").replace("idle_minutes = 2.0", "idle_minutes = 0.02")
     config = config.replace('model = "model.onnx"', f'model = "{(ROOT / "runs/rep/model.onnx").as_posix()}"')
     (folder / "bot.toml").write_text(config)
 
@@ -214,13 +228,14 @@ def main() -> None:
     output: list[str] = []
     threading.Thread(target=lambda: output.extend(bot.stdout), daemon=True).start()
     finished = mock.finished.wait(timeout=300)
+    matchmade = mock.matchmade.wait(timeout=15)
     time.sleep(1.5)
     bot.terminate()
     bot.wait(timeout=10)
     server.shutdown()
     shutil.rmtree(folder, ignore_errors=True)
 
-    print("".join(output[-12:]))
+    print("".join(line for line in output if ": move " not in line))
     assert finished, "game did not finish within 5 minutes"
     assert mock.declined.get("c960") == "variant", mock.declined
     assert mock.declined.get("cbullet") == "tooFast", mock.declined
@@ -231,9 +246,13 @@ def main() -> None:
     assert mock.bot_moves >= 5, f"only {mock.bot_moves} bot moves"
     assert len(mock.chat) == 2, mock.chat
     assert not any(TOKEN in line for line in output), "token appeared in the bot log"
+    assert matchmade, "no matchmaking challenge after the game"
+    assert all(name.lower() == "goodbot" for name, _ in mock.sent_challenges), mock.sent_challenges
+    _, form = mock.sent_challenges[0]
+    assert form["rated"] == "true" and (form["clock.limit"], form["clock.increment"]) in (("180", "2"), ("300", "3")), form
     print(f"ok: declined chess960 (variant), bullet (tooFast) and a second blitz while busy (later), accepted blitz, "
           f"reconnected after a dropped stream, {mock.bot_moves} legal bot moves over {len(mock.moves)} plies, "
-          f"greeting and goodbye sent, token never logged")
+          f"greeting and goodbye sent, token never logged, then challenged the one online bot in rating range")
 
 
 if __name__ == "__main__":

@@ -115,6 +115,9 @@ The bot looks for the config in this order: `--config <path>`, the `KESTREL_BOT_
 | `challenges` | `accept_rated`, `accept_casual`, `accept_bots`, `accept_humans`, `max_games` | who and how many |
 | `challenges` | `allow_users`, `block_users` | if `allow_users` is not empty, only those usernames may challenge it. Use this with your own username while testing |
 | `chat` | `greeting`, `goodbye` | messages sent to the opponent at the start and end of a game, empty to stay quiet |
+| `matchmaking` | `enabled`, `idle_minutes` | when on, after this many minutes without a game it challenges a random online bot |
+| `matchmaking` | `time_controls`, `rated` | clocks to offer, such as `"5+3"`, picked at random each time; each must be one of the accepted `speeds` |
+| `matchmaking` | `max_rating_diff`, `cooldown_minutes` | only bots within this many points of Kestrel's rating at that speed (any rating while Kestrel's is provisional), and not the same bot again within the cooldown. Blocked users are never challenged |
 
 Declined challenges get the matching Lichess reason (`variant`, `tooFast`, `tooSlow`, `timeControl`, `noBot`, `onlyBot`, `rated`, `casual`, `later`).
 

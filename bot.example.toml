@@ -27,6 +27,15 @@ accept_humans = true
 allow_users = []
 block_users = []
 
+# Matchmaking
+[matchmaking]
+enabled = false
+idle_minutes = 2.0
+time_controls = ["3+2", "5+3"]
+rated = true
+max_rating_diff = 300
+cooldown_minutes = 60.0
+
 # Chat Messages
 [chat]
 greeting = "Hi, I'm Kestrel, a small neural network. Good luck!"

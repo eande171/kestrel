@@ -3,7 +3,9 @@
 import argparse
 import http.client
 import json
+import math
 import os
+import random
 import sys
 import threading
 import time
@@ -57,14 +59,36 @@ class BotConfig:
     block_users: list[str] = field(default_factory=list)
     greeting: str = ""
     goodbye: str = ""
+    matchmaking_enabled: bool = False
+    matchmaking_idle_minutes: float = 2.0
+    matchmaking_time_controls: list[str] = field(default_factory=lambda: ["3+2", "5+3"])
+    matchmaking_rated: bool = True
+    matchmaking_max_rating_diff: int = 300
+    matchmaking_cooldown_minutes: float = 60.0
 
 
 CONVERTERS = {int: int, float: float, bool: bool, str: str, list[str]: list}
 
+
+def parse_time_control(text: str) -> tuple[int, int]:
+    """Returns initial seconds and increment from a time control like '5+3', where the minutes may be 0.5."""
+    minutes, increment = text.split("+")
+    return round(float(minutes) * 60), int(increment)
+
+
+def speed_of(limit: int, increment: int) -> str:
+    """Returns the Lichess speed for a clock, from its estimated game length of limit plus 40 increments."""
+    estimate = limit + 40 * increment
+    for bound, speed in ((29, "ultraBullet"), (179, "bullet"), (479, "blitz"), (1499, "rapid")):
+        if estimate <= bound:
+            return speed
+    return "classical"
+
 def load_config(path: Path) -> BotConfig:
     """Returns the bot settings from a TOML file, reading the token from the file, token_file or LICHESS_BOT_TOKEN."""
     data = tomllib.loads(path.read_text(encoding="utf-8"))
-    lichess, engine, challenges, chat = (data.get(k, {}) for k in ("lichess", "engine", "challenges", "chat"))
+    lichess, engine, challenges, chat, matchmaking = (
+        data.get(k, {}) for k in ("lichess", "engine", "challenges", "chat", "matchmaking"))
 
     token = os.environ.get("LICHESS_BOT_TOKEN") or lichess.get("token", "")
     if not token and lichess.get("token_file"):
@@ -79,7 +103,7 @@ def load_config(path: Path) -> BotConfig:
     if not model.is_absolute():
         model = path.parent / model
 
-    settings = {**engine, **challenges, **chat}
+    settings = {**engine, **challenges, **chat, **{f"matchmaking_{k}": v for k, v in matchmaking.items()}}
     types = {f.name: f.type for f in fields(BotConfig)}
     kwargs = {k: CONVERTERS[types[k]](v) for k, v in settings.items() if k in types and k not in ("token", "model")}
     if "base_url" in lichess:
@@ -92,7 +116,12 @@ def load_config(path: Path) -> BotConfig:
     unknown = [s for s in kwargs.get("speeds", []) if s not in SPEEDS]
     if unknown:
         raise SystemExit(f"unknown speeds in config: {unknown}, expected some of {SPEEDS}")
-    return BotConfig(token=token, model=model, **kwargs)
+    config = BotConfig(token=token, model=model, **kwargs)
+    for control in config.matchmaking_time_controls:
+        speed = speed_of(*parse_time_control(control))
+        if config.matchmaking_enabled and speed not in config.speeds:
+            raise SystemExit(f"matchmaking time control {control} is {speed}, which is not in speeds {config.speeds}")
+    return config
 
 
 def log(text: str) -> None:
@@ -117,23 +146,24 @@ class LichessApi:
         with self._request("GET", path) as response:
             return json.loads(response.read())
 
-    def post(self, path: str, form: dict | None = None) -> bool:
+    def post(self, path: str, form: dict | None = None) -> dict | None:
+        """Returns the JSON reply of a POST, or a bare ok when the reply is empty, and None if it failed."""
         for attempt in range(3):
             try:
                 with self._request("POST", path, form) as response:
-                    response.read()
-                return True
+                    body = response.read()
+                return (json.loads(body) if body.strip() else None) or {"ok": True}
             except urllib.error.HTTPError as e:
                 if e.code == 429:
                     log("rate limited by Lichess, waiting 60 seconds")
                     time.sleep(60)
                     continue
                 log(f"POST {path.split('?')[0]} failed: HTTP {e.code} {e.read()[:200]!r}")
-                return False
+                return None
             except STREAM_ERRORS as e:
                 log(f"POST {path.split('?')[0]} failed: {e!r}, retrying")
                 time.sleep(1 + attempt)
-        return False
+        return None
 
     def stream(self, path: str):
         """Yields JSON objects from an ndjson stream, skipping keep alive lines."""
@@ -154,6 +184,8 @@ class Bot:
         self.reserved: dict[str, float] = {}
         self.lock = threading.Lock()
         self.stop = threading.Event()
+        self.last_activity = time.time()
+        self.challenged: dict[str, float] = {}
 
     def active_games(self) -> int:
         """Returns running games plus accepted challenges whose game has not started yet."""
@@ -252,6 +284,51 @@ class Bot:
             raise
         finally:
             player.close()
+            self.last_activity = time.time()
+
+    # Matchmaking
+    def matchmaking_loop(self) -> None:
+        idle = self.config.matchmaking_idle_minutes * 60
+        while not self.stop.wait(min(10.0, max(1.0, idle / 4))):
+            if self.active_games() == 0 and time.time() - self.last_activity >= idle:
+                try:
+                    self.challenge_someone()
+                except Exception as e:
+                    log(f"matchmaking failed: {e!r}")
+                self.last_activity = time.time()
+
+    def challenge_someone(self) -> None:
+        """Challenges a random online bot whose rating is close to Kestrel's at one of the configured time controls."""
+        c = self.config
+        control = random.choice(c.matchmaking_time_controls)
+        limit, increment = parse_time_control(control)
+        speed = speed_of(limit, increment)
+        ours = self.api.get_json("/api/account").get("perfs", {}).get(speed, {})
+        now = time.time()
+        candidates = []
+        for bot in self.api.stream("/api/bot/online?nb=200"):
+            name = bot.get("id", "").lower()
+            rating = bot.get("perfs", {}).get(speed, {}).get("rating")
+            recent = now - self.challenged.get(name, -math.inf) < c.matchmaking_cooldown_minutes * 60
+            if name == self.username.lower() or name in c.block_users or recent or rating is None:
+                continue
+            if ours.get("rating") and not ours.get("prov") and abs(rating - ours["rating"]) > c.matchmaking_max_rating_diff:
+                continue
+            candidates.append(bot)
+        if not candidates:
+            log(f"matchmaking: no online bot fits {control} near rating {ours.get('rating', 'unknown')}")
+            return
+        opponent = random.choice(candidates)
+        name = opponent["id"].lower()
+        self.challenged[name] = now
+        form = {"rated": str(c.matchmaking_rated).lower(), "clock.limit": limit, "clock.increment": increment,
+                "color": "random", "variant": "standard"}
+        reply = self.api.post(f"/api/challenge/{opponent['username']}", form)
+        if reply and reply.get("id"):
+            with self.lock:
+                self.reserved[reply["id"]] = time.time()
+            log(f"matchmaking: challenged {opponent['username']} "
+                f"({opponent['perfs'][speed]['rating']}) to {control} {'rated' if c.matchmaking_rated else 'casual'}")
 
     def on_game_event(self, game_id: str, event: dict, player: Player, session: dict) -> bool:
         """Handles one game stream event, playing a move when it is Kestrel's turn, and returns True once the game is over."""
@@ -307,6 +384,10 @@ class Bot:
         self.evaluator = OnnxEvaluator(self.config.model, self.config.threads)
         log(f"Kestrel bot running as {self.username} (depth up to {self.config.max_depth}, "
             f"speeds {', '.join(self.config.speeds)}, max {self.config.max_games} game(s))")
+        if self.config.matchmaking_enabled:
+            log(f"matchmaking on: challenging online bots after {self.config.matchmaking_idle_minutes:g} idle minutes "
+                f"at {', '.join(self.config.matchmaking_time_controls)}")
+            threading.Thread(target=self.matchmaking_loop, name="matchmaking", daemon=True).start()
         backoff = 1
         while not self.stop.is_set():
             try:
@@ -316,7 +397,11 @@ class Bot:
                     if kind == "challenge":
                         self.handle_challenge(event["challenge"])
                     elif kind in ("challengeCanceled", "challengeDeclined"):
-                        self.release(event.get("challenge", {}).get("id", ""))
+                        challenge = event.get("challenge", {})
+                        self.release(challenge.get("id", ""))
+                        if kind == "challengeDeclined":
+                            who = (challenge.get("destUser") or {}).get("name", "?")
+                            log(f"challenge {challenge.get('id')} declined by {who}: {challenge.get('declineReasonKey')}")
                     elif kind == "gameStart":
                         game = event.get("game", {})
                         game_id = game.get("gameId") or game.get("id")
