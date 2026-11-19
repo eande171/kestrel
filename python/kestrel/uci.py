@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from .inference import OnnxEvaluator
-from .player import Clock, Player, score_to_cp
+from .player import MAX_DEPTH, Clock, Player, score_to_cp
 
 DEFAULT_MODEL = Path(os.environ.get("KESTREL_MODEL", Path(__file__).resolve().parents[2] / "runs" / "rep" / "model.onnx"))
 START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
@@ -39,7 +39,7 @@ class KestrelUci:
         name = " ".join(tokens[tokens.index("name") + 1 : tokens.index("value")]).lower()
         value = " ".join(tokens[tokens.index("value") + 1 :])
         if name == "depth":
-            self.max_depth = max(0, min(4, int(value)))
+            self.max_depth = max(0, min(MAX_DEPTH, int(value)))
         elif name == "width":
             self.width = max(1, min(30, int(value)))
         elif name == "randomness":
@@ -82,7 +82,7 @@ class KestrelUci:
             if command == "uci":
                 self.send("id name Kestrel")
                 self.send("id author Kestrel project")
-                self.send(f"option name Depth type spin default {self.max_depth} min 0 max 4")
+                self.send(f"option name Depth type spin default {self.max_depth} min 0 max {MAX_DEPTH}")
                 self.send(f"option name Width type spin default {self.width} min 1 max 30")
                 self.send(f"option name Randomness type spin default {round(self.randomness * 1000)} min 0 max 100")
                 self.send("uciok")

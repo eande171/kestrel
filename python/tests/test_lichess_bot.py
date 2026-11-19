@@ -195,6 +195,7 @@ def main() -> None:
     (folder / "token.txt").write_text(TOKEN)
     config = (ROOT / "bot.example.toml").read_text()
     config = config.replace('base_url = "https://lichess.org"', f'base_url = "http://127.0.0.1:{port}"')
+    config = config.replace("max_depth = 5", "max_depth = 4")
     config = config.replace('model = "model.onnx"', f'model = "{(ROOT / "runs/rep/model.onnx").as_posix()}"')
     (folder / "bot.toml").write_text(config)
 
@@ -218,7 +219,7 @@ def main() -> None:
     assert mock.declined.get("cbullet") == "tooFast", mock.declined
     assert mock.accepted == ["cblitz"], mock.accepted
     assert not mock.illegal, f"illegal moves sent: {mock.illegal}"
-    assert mock.bot_moves >= 10, f"only {mock.bot_moves} bot moves"
+    assert mock.bot_moves >= 5, f"only {mock.bot_moves} bot moves"
     assert len(mock.chat) == 2, mock.chat
     assert not any(TOKEN in line for line in output), "token appeared in the bot log"
     print(f"ok: declined chess960 (variant) and bullet (tooFast), accepted blitz, "

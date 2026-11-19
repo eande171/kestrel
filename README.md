@@ -78,10 +78,10 @@ D:\chess-venv\Scripts\python.exe -m kestrel.uci --model runs/rep/model.onnx --th
 ```
 
 - Needs `numpy`, `onnxruntime`, an exported model and the Rust `kestrel` binary (found next to the repo, or set `KESTREL_ENGINE`). `KESTREL_MODEL` and `KESTREL_THREADS` set the defaults.
-- UCI options: `Depth` (0 to 4, default 3), `Width` (moves searched at each step, default 6) and `Randomness` (in thousandths; root moves this close to the best are picked at random, default 10, so it does not repeat the same game).
-- Time management: from `wtime`/`btime`/`winc`/`binc` it allows about a thirtieth of the remaining time plus most of the increment, and drops to a shallower search when a deeper one would not fit. It learns how long each depth takes as it plays.
+- UCI options: `Depth` (the deepest search allowed, 0 to 6, default 4), `Width` (moves searched at each step, default 6) and `Randomness` (in thousandths; root moves this close to the best are picked at random, default 10, so it does not repeat the same game).
+- Time management: from `wtime`/`btime`/`winc`/`binc` it allows about a thirtieth of the remaining time plus most of the increment, and drops to a shallower search when a deeper one would not fit. It learns how long each depth takes as it plays, and guesses a depth it has not tried yet as 6 times the one below.
 
-Speed on an i7-12700KF with 2 threads: depth 3 takes about 0.1 s per move and depth 4 about 0.6 s. ONNX and PyTorch choose the same move on 100% of 5,000 test positions (`python/tests/test_features.py`).
+Speed on an i7-12700KF with 2 threads: depth 3 takes about 0.1 s per move, depth 4 about 0.6 s, depth 5 about 3.5 s and depth 6 about 21 s. So depth 5 fits 5+3 blitz and depth 6 fits 15+10 rapid. ONNX and PyTorch choose the same move on 100% of 5,000 test positions (`python/tests/test_features.py`).
 
 ## Lichess bot
 
@@ -106,7 +106,7 @@ The bot looks for the config in this order: `--config <path>`, the `KESTREL_BOT_
 | `lichess` | `token_file` | file holding only the token. `LICHESS_BOT_TOKEN` in the environment overrides it |
 | `lichess` | `base_url` | `https://lichess.org` |
 | `engine` | `model`, `threads` | ONNX model and CPU threads |
-| `engine` | `max_depth`, `width` | deepest search (4 is about 1975 on the Stockfish scale) and moves searched at each step |
+| `engine` | `max_depth`, `width` | deepest search, up to 6 (on the Stockfish scale 4 is about 1975 and 5 about 2160; 6 is not measured yet) and moves searched at each step |
 | `engine` | `randomness` | thousandths of a point; root moves this close to the best are picked at random |
 | `engine` | `reserve_seconds` | seconds kept back from the clock for network lag |
 | `challenges` | `speeds`, `variants` | any of `ultraBullet`, `bullet`, `blitz`, `rapid`, `classical`, `correspondence`; variants by Lichess key |
@@ -201,6 +201,17 @@ D:\chess-venv\Scripts\python.exe -m kestrel.stockfish_match --run runs/rep --lev
 ```
 
 This plays the network against Stockfish with its strength capped at each `UCI_Elo` level, saves every game as PGN under `runs/<run>/stockfish/`, and fits one rating across all levels with a 95% range.
+
+Results so far for the current model, with Stockfish at 200 ms per move:
+
+| Kestrel setting | Seconds per move | Estimate (95% range) |
+|---|---|---|
+| Top move only | under 0.01 | about 1410 |
+| Depth 3 | 0.1 | 1693 (1639 to 1748) |
+| Depth 4 | 0.6 | 1975 (1906 to 2044) |
+| Depth 5 | 3.5 | 2158 (2060 to 2254) |
+
+These are on Stockfish's `UCI_Elo` scale, which is not the same as a Lichess rating.
 
 ## Licences
 

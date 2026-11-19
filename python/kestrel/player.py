@@ -9,8 +9,9 @@ from .inference import greedy_move
 from .search import MATE, NetSearch
 
 # Seconds Per Move Guesses
-INITIAL_COST = {0: 0.02, 2: 0.15, 3: 0.6, 4: 3.0}
-DEPTHS_DESCENDING = [4, 3, 2, 0]
+INITIAL_COST = {0: 0.02, 2: 0.15}
+DEPTH_GROWTH = 6.0
+MAX_DEPTH = 6
 
 
 @dataclass
@@ -48,7 +49,7 @@ class Player:
     def __init__(self, evaluator, max_depth: int = 4, width: int = 6, randomness: float = 0.01,
                  reserve_seconds: float = 0.0):
         self.evaluator = evaluator
-        self.max_depth = max_depth
+        self.max_depth = min(max_depth, MAX_DEPTH)
         self.reserve_seconds = reserve_seconds
         self.engine = Engine()
         self.search = NetSearch(evaluator, self.engine, max_depth, width, randomness)
@@ -66,6 +67,12 @@ class Player:
         moves_left = clock.movestogo or 30
         return min(remaining / moves_left + 0.75 * increment, remaining * 0.2)
 
+    def estimate(self, depth: int) -> float:
+        """Returns the expected seconds for a search of this depth, scaling up from the depth below if unmeasured."""
+        if depth in self.cost:
+            return self.cost[depth]
+        return self.estimate(depth - 1) * DEPTH_GROWTH
+
     def choose(self, moves: list[str], base_fen: str | None, clock: Clock) -> Decision:
         """Returns the move to play after the given moves, within the clock's budget."""
         self.engine.position(moves, fen=base_fen)
@@ -76,7 +83,7 @@ class Player:
             depth = min(self.max_depth, clock.depth)
         else:
             budget = self.budget(clock, state.fen.split()[1] == "w")
-            depth = next((d for d in DEPTHS_DESCENDING if d <= self.max_depth and self.cost[d] <= budget), 0)
+            depth = next((d for d in range(self.max_depth, 1, -1) if self.estimate(d) <= budget), 0)
         if depth == 1:
             depth = 0
 
@@ -90,7 +97,7 @@ class Player:
             score = self.search.last_score
         elapsed = time.time() - start
         if len(state.legal) > 1:
-            self.cost[depth] = 0.7 * self.cost[depth] + 0.3 * elapsed
+            self.cost[depth] = 0.7 * self.cost[depth] + 0.3 * elapsed if depth in self.cost else elapsed
         return Decision(move, depth, elapsed, score)
 
     def close(self) -> None:
