@@ -373,7 +373,7 @@ class Bot:
     def cancel_leftover(self, challenge_id: str) -> None:
         """Cancels a challenge from this account that matchmaking did not send, once its reply has had time to arrive."""
         with self.lock:
-            ours = challenge_id in self.reserved or challenge_id in self.games
+            ours = challenge_id in self.reserved or challenge_id in self.games or challenge_id in self.sent
         if not ours:
             log(f"cancelling challenge {challenge_id} left over from an earlier run")
             self.api.post(f"/api/challenge/{challenge_id}/cancel")
