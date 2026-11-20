@@ -1,5 +1,7 @@
 pub mod evals;
 pub mod game;
+pub mod net;
+pub mod netsearch;
 pub mod prep;
 pub mod search;
 pub mod uci;

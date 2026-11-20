@@ -75,6 +75,11 @@ impl Game {
         legal_moves(&self.board)
     }
 
+    /// Returns the hashes of the positions since the last capture or pawn move, the current one last.
+    pub fn history(&self) -> &[u64] {
+        &self.hashes
+    }
+
     pub fn repetitions(&self) -> usize {
         let current = self.board.hash();
         self.hashes.iter().filter(|&&h| h == current).count().saturating_sub(1)

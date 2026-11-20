@@ -8,7 +8,7 @@ use kestrel::game::{ascii_board, Game, Outcome};
 use kestrel::evals::{self, EvalConfig};
 use kestrel::prep::{self, PrepConfig};
 use kestrel::search::Baseline;
-use kestrel::{perft, uci};
+use kestrel::{game, net, netsearch, perft, uci};
 use cozy_chess::{Board, Color};
 
 const USAGE: &str = "\
@@ -27,7 +27,11 @@ commands:
   prep-evals --input PATH_OR_URL [options] turn the Lichess evaluation database (.jsonl.zst) into shards
         --out DIR (data/evals) --positions N (30000000) --keep-percent X (8)
         --skip-percent X (0, skips the lines an earlier run with the same seed kept at this percent)
-        --shards N (8) --val-every N (50) --seed N (1)";
+        --shards N (8) --val-every N (50) --seed N (1)
+  net-eval --weights FILE --fens FILE --out FILE   write wdl and policy logits for each \"fen<TAB>repetitions\" line
+  net-bench --weights FILE                          time the network on a few positions
+  net-search --weights FILE --fens FILE [--depth N] [--seconds S]
+        search each \"fen<TAB>moves\" line and print the move, score, depth reached and positions expanded";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -77,6 +81,54 @@ fn main() {
                 eprintln!("prep failed: {e}");
                 std::process::exit(1);
             }
+        }
+        "net-eval" => {
+            let (Some(weights), Some(fens), Some(out)) = (opts.get("weights"), opts.get("fens"), opts.get("out")) else {
+                eprintln!("net-eval needs --weights, --fens and --out");
+                std::process::exit(2);
+            };
+            let network = load_network(weights);
+            let all: Vec<usize> = (0..net::POLICY_SIZE).collect();
+            let mut bytes = Vec::new();
+            for line in std::fs::read_to_string(fens).expect("cannot read fens").lines() {
+                let (fen, reps) = line.split_once('\t').unwrap_or((line, "0"));
+                let board = Board::from_fen(fen, false).expect("bad fen");
+                let output = network.evaluate(&net::encode(&board, reps.trim().parse().unwrap_or(0)), Some(&all));
+                for v in output.wdl.iter().chain(&output.policy) {
+                    bytes.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            std::fs::write(out, bytes).expect("cannot write output");
+        }
+        "net-search" => {
+            let (Some(weights), Some(fens)) = (opts.get("weights"), opts.get("fens")) else {
+                eprintln!("net-search needs --weights and --fens");
+                std::process::exit(2);
+            };
+            let network = load_network(weights);
+            let clock = Instant::now();
+            let mut search = netsearch::NetSearch::new(&network, move || clock.elapsed().as_secs_f64(), 6, 0.0, 1);
+            let depth = get_opt(&opts, "depth", 4u32);
+            let seconds: Option<f64> = opts.get("seconds").and_then(|s| s.parse().ok());
+            for line in std::fs::read_to_string(fens).expect("cannot read fens").lines() {
+                let (fen, moves) = line.split_once('\t').unwrap_or((line, ""));
+                let mut game = Game::from_fen(fen).expect("bad fen");
+                for mv in moves.split_whitespace() {
+                    game.play_uci(mv).expect("bad move");
+                }
+                let start = Instant::now();
+                let best = search.choose(&game, depth, seconds);
+                let uci = best.map(|mv| game.uci(mv)).unwrap_or_else(|| "none".into());
+                println!("{uci} {:.6} {} {} {:.3} {}", search.last_score, search.completed_depth, search.nodes,
+                         start.elapsed().as_secs_f64(), search.evaluations);
+            }
+        }
+        "net-bench" => {
+            let Some(weights) = opts.get("weights") else {
+                eprintln!("net-bench needs --weights");
+                std::process::exit(2);
+            };
+            net_bench(&load_network(weights));
         }
         "prep-evals" => {
             let Some(input) = opts.get("input") else {
@@ -164,6 +216,27 @@ fn play(depth: u32, human_white: bool) {
             println!("baseline plays {} (score {} cp, {} nodes)", game.uci(mv), result.score, result.nodes);
             game.play(mv).expect("search returns legal moves");
         }
+    }
+}
+
+fn load_network(path: &str) -> net::Network {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+    net::Network::load(&bytes).unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn net_bench(network: &net::Network) {
+    let board = Board::from_fen("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10", false).unwrap();
+    let planes = net::encode(&board, 0);
+    let legal: Vec<usize> = game::legal_moves(&board).into_iter().map(|mv| net::policy_index(&board, mv)).collect();
+    for (label, indices) in [("value only", None), ("value and legal move policy", Some(legal.as_slice()))] {
+        let runs = 2000;
+        let start = Instant::now();
+        let mut total = 0.0;
+        for _ in 0..runs {
+            total += network.evaluate(&planes, indices).value();
+        }
+        let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+        println!("{label}: {ms:.3} ms per position (checksum {total:.3})");
     }
 }
 
