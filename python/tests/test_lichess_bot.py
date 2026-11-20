@@ -225,7 +225,7 @@ def main() -> None:
     config = config.replace('base_url = "https://lichess.org"', f'base_url = "http://127.0.0.1:{port}"')
     config = config.replace("max_depth = 10", "max_depth = 4")
     config = config.replace("enabled = false", "enabled = true").replace("idle_minutes = 2.0", "idle_minutes = 0.02")
-    config = config.replace('model = "model.onnx"', f'model = "{(ROOT / "runs/rep/model.onnx").as_posix()}"')
+    config = config.replace('model = "model.onnx"', f'model = "{(ROOT / "runs/evals6/model.onnx").as_posix()}"')
     (folder / "bot.toml").write_text(config)
 
     bot = subprocess.Popen(
@@ -257,6 +257,7 @@ def main() -> None:
     assert mock.bot_moves >= 5, f"only {mock.bot_moves} bot moves"
     assert len(mock.chat) == 2, mock.chat
     assert not any(TOKEN in line for line in output), "token appeared in the bot log"
+    assert any("searching with the Rust engine" in line for line in output), "bot did not use the Rust search"
     assert matchmade, "no matchmaking challenge after the game"
     assert all(name.lower() == "goodbot" for name, _ in mock.sent_challenges), mock.sent_challenges
     _, form = mock.sent_challenges[0]

@@ -93,6 +93,39 @@ class UciProcess:
         self.close()
 
 
+@dataclass
+class SearchResult:
+    move: str
+    depth: int
+    score: float
+    nodes: int
+
+
+class NetEngine(UciProcess):
+    """Runs the Rust network search, which keeps its caches between searches and pondering."""
+
+    def __init__(self, weights: Path, path: Path = DEFAULT_ENGINE):
+        super().__init__([str(path), "net-uci", "--weights", str(weights)])
+        self._send("isready")
+        self._read_until("readyok")
+
+    def start(self, moves: list[str], base_fen: str | None, limits: str) -> None:
+        self.position(moves, fen=base_fen)
+        self._send(f"go {limits}")
+
+    def result(self) -> SearchResult:
+        """Waits for the running search and returns its move, depth, score and positions expanded."""
+        lines = self._read_until("bestmove")
+        info = next((line.split() for line in reversed(lines) if line.startswith("info depth")), [])
+        fields = dict(zip(info[1::2], info[2::2]))
+        return SearchResult(lines[-1].split()[1], int(fields.get("depth", 0)), float(fields.get("score", 0.0)),
+                            int(fields.get("nodes", 0)))
+
+    def stop(self) -> SearchResult:
+        self._send("stop")
+        return self.result()
+
+
 class Engine(UciProcess):
     """Kestrel's Rust rules engine and material baseline."""
 

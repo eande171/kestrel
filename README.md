@@ -140,6 +140,7 @@ It checks that the account has the BOT title, then listens for challenges. Games
 - Challenges that go unanswered for 30 seconds are cancelled. When Lichess rate limits new challenges, matchmaking pauses for 30 minutes and incoming challenges are still accepted.
 - Matchmaking learns from declines for the rest of the run: a bot that refuses bots or declines without a reason is not challenged again, one that wants casual games is offered casual games, and a declined time control is not offered to that bot again. A bot the challenge request fails for (for example after its 100 bot games a day) is skipped for 6 hours.
 - `--no-matchmaking` turns matchmaking off for one run without editing the config.
+- When a `model.kstn` (from `python -m kestrel.export_weights`) sits next to the configured `model.onnx`, the bot searches and ponders with the Rust engine (`kestrel net-uci`) instead of Python and ONNX Runtime. It reaches about one ply deeper in the same time, keeps its caches between moves and pondering, and logs which search it uses at startup.
 
 `python/tests/test_lichess_bot.py` runs the whole bot against a local mock of the Lichess API (challenges declined and accepted, a full game, chat, and a check that the token is never logged), so it can be tested without an account.
 

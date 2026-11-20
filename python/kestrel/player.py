@@ -1,11 +1,13 @@
 """Chooses Kestrel's move for a position and clock, shared by the UCI engine and the Lichess bot."""
 
 import math
+import random
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
-from .engine_client import Engine
+from .engine_client import Engine, NetEngine
 from .inference import greedy_move
 from .search import MATE, NetSearch
 
@@ -46,12 +48,17 @@ class Player:
     """Owns one rules engine process and picks moves with the shared evaluator."""
 
     def __init__(self, evaluator, max_depth: int = 4, width: int = 6, randomness: float = 0.01,
-                 reserve_seconds: float = 0.0):
+                 reserve_seconds: float = 0.0, weights: Path | None = None):
         self.evaluator = evaluator
         self.max_depth = min(max_depth, MAX_DEPTH)
         self.reserve_seconds = reserve_seconds
         self.engine = Engine()
         self.search = NetSearch(evaluator, self.engine, max_depth, width, randomness)
+        self.net = NetEngine(weights) if weights else None
+        if self.net:
+            self.net.set_option("Randomness", round(randomness * 1000))
+            self.net.set_option("Seed", random.randrange(1, 2**31))
+        self._net_pondering = False
         self._ponder_thread: threading.Thread | None = None
         self._ponder_stop = threading.Event()
         self._pondered = 0
@@ -60,6 +67,10 @@ class Player:
     def start_pondering(self, moves: list[str], base_fen: str | None) -> None:
         """Searches the position after the given moves in the background until stopped, filling the cache."""
         self.stop_pondering()
+        if self.net:
+            self.net.start(moves, base_fen, f"infinite depth {self.max_depth}")
+            self._net_pondering = True
+            return
         self._ponder_stop = threading.Event()
         self._ponder_thread = threading.Thread(target=self._ponder, args=(list(moves), base_fen, self._ponder_stop),
                                                name="ponder", daemon=True)
@@ -78,6 +89,9 @@ class Player:
 
     def stop_pondering(self) -> int:
         """Stops any background search and returns how many positions it expanded."""
+        if self._net_pondering:
+            self._net_pondering = False
+            return self.net.stop().nodes
         if self._ponder_thread is None:
             return 0
         self._ponder_stop.set()
@@ -107,12 +121,22 @@ class Player:
         start = time.monotonic()
         if len(state.legal) == 1:
             return Decision(state.legal[0], 0, 0.0, None, pondered)
+        if clock.depth is not None and min(self.max_depth, clock.depth) <= 1:
+            move = greedy_move(self.evaluator, state.fen, state.repetitions, state.legal)
+            return Decision(move, 0, time.monotonic() - start, None, pondered)
+        if self.net:
+            if clock.depth is not None:
+                limits = f"depth {min(self.max_depth, clock.depth)}"
+            else:
+                budget = self.budget(clock, state.fen.split()[1] == "w")
+                limits = f"depth {self.max_depth}" + (f" movetime {int(budget * 1000)}" if budget < math.inf else "")
+            self.net.start(moves, base_fen, limits)
+            result = self.net.result()
+            return Decision(result.move, result.depth, time.monotonic() - start,
+                            result.score if result.depth else None, pondered)
         if clock.depth is not None:
-            depth = min(self.max_depth, clock.depth)
-            if depth <= 1:
-                move = greedy_move(self.evaluator, state.fen, state.repetitions, state.legal)
-                return Decision(move, 0, time.monotonic() - start, None, pondered)
-            move = self.search.choose(moves, state.fen, state.repetitions, base_fen=base_fen, depth=depth)
+            move = self.search.choose(moves, state.fen, state.repetitions, base_fen=base_fen,
+                                      depth=min(self.max_depth, clock.depth))
         else:
             budget = self.budget(clock, state.fen.split()[1] == "w")
             move = self.search.choose(moves, state.fen, state.repetitions, base_fen=base_fen,
@@ -123,3 +147,5 @@ class Player:
     def close(self) -> None:
         self.stop_pondering()
         self.engine.close()
+        if self.net:
+            self.net.close()

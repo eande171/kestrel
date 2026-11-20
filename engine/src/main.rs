@@ -30,6 +30,7 @@ commands:
         --shards N (8) --val-every N (50) --seed N (1)
   net-eval --weights FILE --fens FILE --out FILE   write wdl and policy logits for each \"fen<TAB>repetitions\" line
   net-bench --weights FILE                          time the network on a few positions
+  net-uci --weights FILE [--depth N]               the network search as a UCI engine, with go infinite and stop for pondering
   net-match --weights FILE [--games N] [--seconds S] [--a no_check_extensions,no_extensions,no_endgame_tuning]
         play a search with the listed settings against the default one at equal time
   net-search --weights FILE --fens FILE [--depth N] [--seconds S]
@@ -121,6 +122,13 @@ fn main() {
                 println!("{uci} {:.6} {} {} {:.3} {}", search.last_score, search.completed_depth, search.nodes,
                          start.elapsed().as_secs_f64(), search.evaluations);
             }
+        }
+        "net-uci" => {
+            let Some(weights) = opts.get("weights") else {
+                eprintln!("net-uci needs --weights");
+                std::process::exit(2);
+            };
+            kestrel::netuci::run(load_network(weights), get_opt(&opts, "depth", 10));
         }
         "net-match" => {
             let Some(weights) = opts.get("weights") else {

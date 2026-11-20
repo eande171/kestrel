@@ -189,6 +189,7 @@ class Bot:
         self.config = config
         self.api = api or LichessApi(config.base_url, config.token)
         self.evaluator = None
+        self.rust_weights: Path | None = None
         self.username = ""
         self.games: dict[str, threading.Thread] = {}
         self.reserved: dict[str, float] = {}
@@ -280,7 +281,7 @@ class Bot:
     # Game Loop
     def play_game(self, game_id: str) -> None:
         player = Player(self.evaluator, self.config.max_depth, self.config.width, self.config.randomness,
-                        self.config.reserve_seconds)
+                        self.config.reserve_seconds, self.rust_weights)
         session = {"color": None, "base_fen": None, "greeted": False, "last_played": -1}
         failures = 0
         try:
@@ -441,6 +442,9 @@ class Bot:
         if account.get("title") != "BOT":
             raise SystemExit(f"account {self.username} is not a BOT account yet, see the README for the upgrade step")
         self.evaluator = OnnxEvaluator(self.config.model, self.config.threads)
+        weights = self.config.model.with_suffix(".kstn")
+        self.rust_weights = weights if weights.exists() else None
+        log(f"searching with {'the Rust engine and ' + weights.name if self.rust_weights else 'Python and ONNX Runtime'}")
         log(f"Kestrel bot running as {self.username} (depth up to {self.config.max_depth}, "
             f"speeds {', '.join(self.config.speeds)}, max {self.config.max_games} game(s))")
         if self.config.matchmaking_enabled:
