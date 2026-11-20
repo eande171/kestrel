@@ -39,6 +39,7 @@ def parse_args(argv=None):
     p.add_argument("--endgame-weight", type=float, default=1.0, help="how many times as often to sample endgames")
     p.add_argument("--endgame-pieces", type=int, default=12, help="positions with this many pieces or fewer, kings included")
     p.add_argument("--gpu-data-gb", type=float, default=2.5, help="keep training data on the GPU up to this size")
+    p.add_argument("--pin-gb", type=float, default=6.0, help="pin larger training data in system memory up to this size")
     p.add_argument("--run", default="runs/main")
     p.add_argument("--blocks", type=int, default=6)
     p.add_argument("--channels", type=int, default=64)
@@ -290,7 +291,8 @@ def main(argv=None) -> int:
     data_dirs = [Path(d) for d in args.data]
     rows = shard_rows(shard_files(data_dirs, "train"))
     on_gpu = rows * RECORD_BYTES <= args.gpu_data_gb * 1e9
-    train = torch.empty((rows, RECORD_BYTES), dtype=torch.uint8, pin_memory=not on_gpu)
+    pinned = not on_gpu and rows * RECORD_BYTES <= args.pin_gb * 1e9
+    train = torch.empty((rows, RECORD_BYTES), dtype=torch.uint8, pin_memory=pinned)
     load_shards(data_dirs, "train", out=train.numpy())
     counts = piece_counts(train.numpy())
     if on_gpu:
@@ -300,7 +302,7 @@ def main(argv=None) -> int:
     log_event(
         run,
         f"data train {len(train):,} val {len(val):,} positions ({endgames:,} with {args.endgame_pieces} pieces or "
-        f"fewer, weighted x{args.endgame_weight}), kept on {'GPU' if on_gpu else 'pinned CPU memory'}, "
+        f"fewer, weighted x{args.endgame_weight}), kept on {'GPU' if on_gpu else 'pinned CPU memory' if pinned else 'CPU memory'}, "
         f"model {count_parameters(model):,} parameters, batch {args.batch_size}, duty {args.duty}",
     )
 
