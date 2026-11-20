@@ -136,8 +136,8 @@ fn main() {
                 std::process::exit(2);
             };
             let settings: Vec<String> = opts.get("a").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default();
-            let a_network = std::rc::Rc::new(load_network(weights, settings.iter().any(|s| s == "int8")));
-            let b_network = std::rc::Rc::new(load_network(weights, false));
+            let a_network = std::rc::Rc::new(load_network(weights, opts.contains_key("int8") || settings.iter().any(|s| s == "int8")));
+            let b_network = std::rc::Rc::new(load_network(weights, opts.contains_key("int8")));
             net_match([a_network, b_network], get_opt(&opts, "games", 40u32), get_opt(&opts, "seconds", 1.0f64), &settings);
         }
         "net-bench" => {

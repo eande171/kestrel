@@ -244,6 +244,7 @@ def main() -> None:
     bot.terminate()
     bot.wait(timeout=10)
     server.shutdown()
+    memory = json.loads((folder / "opponent_memory.json").read_text()) if (folder / "opponent_memory.json").exists() else {}
     shutil.rmtree(folder, ignore_errors=True)
 
     print("".join(line for line in output if ": move " not in line))
@@ -258,6 +259,7 @@ def main() -> None:
     assert len(mock.chat) == 2, mock.chat
     assert not any(TOKEN in line for line in output), "token appeared in the bot log"
     assert any("searching with the Rust engine" in line for line in output), "bot did not use the Rust search"
+    assert "carol" in memory and memory["carol"].get("", {}), f"finished game not recorded in opponent memory: {memory}"
     assert matchmade, "no matchmaking challenge after the game"
     assert all(name.lower() == "goodbot" for name, _ in mock.sent_challenges), mock.sent_challenges
     _, form = mock.sent_challenges[0]

@@ -1,10 +1,11 @@
-"""Remembers how Kestrel's early moves fared against each opponent, to replay wins and avoid losses."""
+"""Remembers how Kestrel's moves fared against each opponent, to replay won games and avoid opening losses."""
 
 import json
 import os
 from pathlib import Path
 
-MEMORY_PLIES = 30
+MEMORY_PLIES = 300
+AVOID_PLIES = 30
 
 
 class OpeningMemory:
@@ -32,7 +33,9 @@ class OpeningMemory:
             return None, set()
         options = self.data.get(opponent.lower(), {}).get(" ".join(moves), {})
         winners = [(wins, move) for move, (wins, _, losses) in options.items() if wins and not losses]
-        losers = {move for move, (wins, _, losses) in options.items() if losses and not wins}
+        losers = set()
+        if len(moves) < AVOID_PLIES:
+            losers = {move for move, (wins, _, losses) in options.items() if losses and not wins}
         return (max(winners)[1] if winners else None), losers
 
     def save(self) -> None:

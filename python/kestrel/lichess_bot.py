@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from .inference import OnnxEvaluator
+from .opening_memory import OpeningMemory
 from .player import Clock, Player
 
 USER_AGENT = "kestrel-bot"
@@ -45,6 +46,7 @@ class BotConfig:
     token: str
     base_url: str = "https://lichess.org"
     model: Path = Path("model.onnx")
+    memory_file: Path | None = None
     threads: int = 2
     max_depth: int = 10
     width: int = 6
@@ -112,7 +114,8 @@ def load_config(path: Path) -> BotConfig:
 
     settings = {**engine, **challenges, **chat, **{f"matchmaking_{k}": v for k, v in matchmaking.items()}}
     types = {f.name: f.type for f in fields(BotConfig)}
-    kwargs = {k: CONVERTERS[types[k]](v) for k, v in settings.items() if k in types and k not in ("token", "model")}
+    kwargs = {k: CONVERTERS[types[k]](v) for k, v in settings.items()
+              if k in types and k not in ("token", "model", "memory_file")}
     if "base_url" in lichess:
         kwargs["base_url"] = lichess["base_url"].rstrip("/")
     if "randomness" in kwargs:
@@ -123,7 +126,7 @@ def load_config(path: Path) -> BotConfig:
     unknown = [s for s in kwargs.get("speeds", []) if s not in SPEEDS]
     if unknown:
         raise SystemExit(f"unknown speeds in config: {unknown}, expected some of {SPEEDS}")
-    config = BotConfig(token=token, model=model, **kwargs)
+    config = BotConfig(token=token, model=model, memory_file=path.parent / "opponent_memory.json", **kwargs)
     for control in config.matchmaking_time_controls:
         speed = speed_of(*parse_time_control(control))
         if config.matchmaking_enabled and speed not in config.speeds:
@@ -191,6 +194,7 @@ class Bot:
         self.api = api or LichessApi(config.base_url, config.token)
         self.evaluator = None
         self.rust_weights: Path | None = None
+        self.memory = OpeningMemory(config.memory_file)
         self.username = ""
         self.games: dict[str, threading.Thread] = {}
         self.reserved: dict[str, float] = {}
@@ -396,6 +400,7 @@ class Bot:
             initial = event.get("initialFen", "startpos")
             session["base_fen"] = None if initial in ("startpos", "") else initial
             opponent = event.get("black" if session["color"] == "white" else "white") or {}
+            session["opponent"] = opponent.get("id") if session["base_fen"] is None else None
             log(f"game {game_id}: playing {session['color']} against {opponent.get('name', opponent.get('aiLevel', '?'))}")
             if self.config.greeting and not session["greeted"]:
                 self.api.post(f"/api/bot/game/{game_id}/chat", {"room": "player", "text": self.config.greeting})
@@ -408,6 +413,11 @@ class Bot:
 
         if state.get("status") not in ("started", "created"):
             log(f"game {game_id}: finished ({state.get('status')}, winner {state.get('winner', 'none')})")
+            played = state.get("moves", "").split()
+            if session.get("opponent") and state.get("status") != "aborted" and len(played) >= 2:
+                winner = state.get("winner")
+                points = 0.5 if not winner else float(winner == session["color"])
+                self.memory.record(session["opponent"], played, session["color"] == "white", points)
             if self.config.goodbye:
                 self.api.post(f"/api/bot/game/{game_id}/chat", {"room": "player", "text": self.config.goodbye})
             return True
@@ -421,7 +431,10 @@ class Bot:
 
         clock = Clock(state.get("wtime"), state.get("btime"), state.get("winc", 0), state.get("binc", 0),
                       movetime_ms=FIRST_MOVE_MS if len(moves) < 2 else None)
-        decision = player.choose(moves, base_fen, clock)
+        replay, avoid = self.memory.advice(session["opponent"], moves) if session.get("opponent") else (None, set())
+        decision = player.choose(moves, base_fen, clock, replay, avoid)
+        if decision.move == replay:
+            log(f"game {game_id}: replaying {replay} from a game won against this opponent")
         if decision.move == "0000":
             return False
         for attempt in range(MOVE_ATTEMPTS):
