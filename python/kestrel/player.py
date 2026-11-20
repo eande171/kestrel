@@ -87,16 +87,15 @@ class Player:
         return pondered
 
     def budget(self, clock: Clock, white_to_move: bool) -> float:
-        """Returns the seconds this move may use."""
-        if clock.movetime_ms is not None:
-            return clock.movetime_ms / 1000 * 0.9
+        """Returns the seconds this move may use, within movetime when one is given."""
+        limit = math.inf if clock.movetime_ms is None else clock.movetime_ms / 1000 * 0.9
         remaining = clock.wtime_ms if white_to_move else clock.btime_ms
         if remaining is None:
-            return math.inf
+            return limit
         remaining = max(0.0, remaining / 1000 - self.reserve_seconds)
         increment = (clock.winc_ms if white_to_move else clock.binc_ms) / 1000
         moves_left = clock.movestogo or 30
-        return min(remaining / moves_left + 0.75 * increment, remaining * 0.2)
+        return min(limit, remaining / moves_left + 0.75 * increment, remaining * 0.2)
 
     def choose(self, moves: list[str], base_fen: str | None, clock: Clock) -> Decision:
         """Returns the move to play after the given moves, at a fixed depth or deepening within the clock's budget."""
