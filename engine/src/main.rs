@@ -90,7 +90,7 @@ fn main() {
                 eprintln!("net-eval needs --weights, --fens and --out");
                 std::process::exit(2);
             };
-            let network = load_network(weights);
+            let network = load_network(weights, opts.contains_key("int8"));
             let all: Vec<usize> = (0..net::POLICY_SIZE).collect();
             let mut bytes = Vec::new();
             for line in std::fs::read_to_string(fens).expect("cannot read fens").lines() {
@@ -108,7 +108,7 @@ fn main() {
                 eprintln!("net-search needs --weights and --fens");
                 std::process::exit(2);
             };
-            let network = std::rc::Rc::new(load_network(weights));
+            let network = std::rc::Rc::new(load_network(weights, opts.contains_key("int8")));
             let clock = Instant::now();
             let mut search = netsearch::NetSearch::new(network, move || clock.elapsed().as_secs_f64(), 0.0, 1);
             let depth = get_opt(&opts, "depth", 4u32);
@@ -128,7 +128,7 @@ fn main() {
                 eprintln!("net-uci needs --weights");
                 std::process::exit(2);
             };
-            kestrel::netuci::run(load_network(weights), get_opt(&opts, "depth", 10));
+            kestrel::netuci::run(load_network(weights, opts.contains_key("int8")), get_opt(&opts, "depth", 10));
         }
         "net-match" => {
             let Some(weights) = opts.get("weights") else {
@@ -136,14 +136,16 @@ fn main() {
                 std::process::exit(2);
             };
             let settings: Vec<String> = opts.get("a").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default();
-            net_match(std::rc::Rc::new(load_network(weights)), get_opt(&opts, "games", 40u32), get_opt(&opts, "seconds", 1.0f64), &settings);
+            let a_network = std::rc::Rc::new(load_network(weights, settings.iter().any(|s| s == "int8")));
+            let b_network = std::rc::Rc::new(load_network(weights, false));
+            net_match([a_network, b_network], get_opt(&opts, "games", 40u32), get_opt(&opts, "seconds", 1.0f64), &settings);
         }
         "net-bench" => {
             let Some(weights) = opts.get("weights") else {
                 eprintln!("net-bench needs --weights");
                 std::process::exit(2);
             };
-            net_bench(&load_network(weights));
+            net_bench(&load_network(weights, opts.contains_key("int8")));
         }
         "prep-evals" => {
             let Some(input) = opts.get("input") else {
@@ -234,9 +236,13 @@ fn play(depth: u32, human_white: bool) {
     }
 }
 
-fn load_network(path: &str) -> net::Network {
+fn load_network(path: &str, int8: bool) -> net::Network {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
-    net::Network::load(&bytes).unwrap_or_else(|e| panic!("{e}"))
+    let mut network = net::Network::load(&bytes).unwrap_or_else(|e| panic!("{e}"));
+    if int8 && !network.use_int8() {
+        panic!("this network's shape has no int8 trunk");
+    }
+    network
 }
 
 // Search Variant Match
@@ -253,19 +259,22 @@ const OPENINGS: [&str; 10] = [
     "d2d4 d7d5 c2c4 c7c6 g1f3 g8f6",
 ];
 
-fn net_match(network: std::rc::Rc<net::Network>, games: u32, seconds: f64, settings: &[String]) {
+fn net_match(networks: [std::rc::Rc<net::Network>; 2], games: u32, seconds: f64, settings: &[String]) {
     let clock = Instant::now();
-    let make = |seed| netsearch::NetSearch::new(network.clone(), move || clock.elapsed().as_secs_f64(), 0.01, seed);
+    let make = |side: usize, seed| {
+        netsearch::NetSearch::new(networks[side].clone(), move || clock.elapsed().as_secs_f64(), 0.01, seed)
+    };
     let (mut wins, mut draws, mut losses) = (0, 0, 0);
     let mut depths = [0u64, 0u64];
     let mut moves_made = [0u64, 0u64];
     for g in 0..games {
-        let mut sides = [make(2 * g as u64 + 1), make(2 * g as u64 + 2)];
+        let mut sides = [make(0, 2 * g as u64 + 1), make(1, 2 * g as u64 + 2)];
         for name in settings {
             match name.as_str() {
                 "no_check_extensions" => sides[0].check_extensions = 0,
                 "no_extensions" => sides[0].extensions = false,
                 "no_endgame_tuning" => sides[0].endgame_tuning = false,
+                "int8" => {}
                 "" => {}
                 other => panic!("unknown setting {other}"),
             }

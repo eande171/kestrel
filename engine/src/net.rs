@@ -1,6 +1,7 @@
 use cozy_chess::{Board, Color, Move, Piece, Square};
 
 use crate::game::standard_move;
+use crate::qconv::{neighbours, QConv};
 
 pub const POLICY_SIZE: usize = 4096 + 72;
 pub const PLANES: usize = 21;
@@ -54,6 +55,7 @@ pub struct Network {
     value_conv: Conv,
     fc1: Conv,
     fc2: Conv,
+    int8_trunk: Option<Vec<(QConv, QConv)>>,
 }
 
 // Expected Score
@@ -93,7 +95,14 @@ impl Network {
         if r.pos != bytes.len() {
             return Err("weights file has extra bytes".into());
         }
-        Ok(Network { stem, trunk, policy, query, key, square_bias, value_conv, fc1, fc2 })
+        Ok(Network { stem, trunk, policy, query, key, square_bias, value_conv, fc1, fc2, int8_trunk: None })
+    }
+
+    // Int8 Trunk
+    pub fn use_int8(&mut self) -> bool {
+        let quantize = |c: &Conv| QConv::new(&c.weight, &c.bias, c.inputs, c.outputs);
+        self.int8_trunk = self.trunk.iter().map(|(a, b)| Some((quantize(a)?, quantize(b)?))).collect();
+        self.int8_trunk.is_some()
     }
 
     // Value Only
@@ -112,10 +121,16 @@ impl Network {
         let (mut x, mut y, mut z) = (vec![0.0; size], vec![0.0; size], vec![0.0; size]);
         conv3x3(&self.stem, planes, &mut x);
         relu(&mut x);
-        for (first, second) in &self.trunk {
-            conv3x3(first, &x, &mut y);
+        for (index, (first, second)) in self.trunk.iter().enumerate() {
+            match &self.int8_trunk {
+                Some(q) => q[index].0.apply(&x, &mut y),
+                None => conv3x3(first, &x, &mut y),
+            }
             relu(&mut y);
-            conv3x3(second, &y, &mut z);
+            match &self.int8_trunk {
+                Some(q) => q[index].1.apply(&y, &mut z),
+                None => conv3x3(second, &y, &mut z),
+            }
             for (a, b) in x.iter_mut().zip(&z) {
                 *a = (*a + b).max(0.0);
             }
@@ -186,15 +201,6 @@ fn conv3x3(conv: &Conv, input: &[f32], out: &mut [f32]) {
         96 => conv3x3_fixed::<96>(conv, input, out),
         _ => conv3x3_any(conv, input, out),
     }
-}
-
-// Board Neighbours
-fn neighbours(sq: usize) -> impl Iterator<Item = (usize, usize)> {
-    let (rank, file) = ((sq / 8) as isize, (sq % 8) as isize);
-    (0..9).filter_map(move |tap| {
-        let (r, f) = (rank + tap as isize / 3 - 1, file + tap as isize % 3 - 1);
-        ((0..8).contains(&r) && (0..8).contains(&f)).then_some((tap, (r * 8 + f) as usize))
-    })
 }
 
 // Zero Skipping

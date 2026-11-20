@@ -3,6 +3,7 @@ pub mod game;
 pub mod net;
 pub mod netsearch;
 pub mod netuci;
+pub mod qconv;
 pub mod prep;
 pub mod search;
 pub mod uci;

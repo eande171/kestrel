@@ -50,10 +50,13 @@ pub extern "C" fn output() -> *const u8 {
 
 // Load Weights
 #[unsafe(no_mangle)]
-pub extern "C" fn load(ptr: *const u8, len: usize) -> usize {
+pub extern "C" fn load(ptr: *const u8, len: usize, int8: u32) -> usize {
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     match Network::load(bytes) {
-        Ok(network) => {
+        Ok(mut network) => {
+            if int8 != 0 {
+                network.use_int8();
+            }
             let search = NetSearch::new(Rc::new(network), || unsafe { now_ms() } / 1000.0, 0.0, 1);
             SEARCH.with_borrow_mut(|s| *s = Some(search));
             0
