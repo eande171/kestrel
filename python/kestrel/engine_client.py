@@ -104,8 +104,8 @@ class SearchResult:
 class NetEngine(UciProcess):
     """Runs the Rust network search, which keeps its caches between searches and pondering."""
 
-    def __init__(self, weights: Path, path: Path = DEFAULT_ENGINE):
-        super().__init__([str(path), "net-uci", "--weights", str(weights)])
+    def __init__(self, weights: Path, int8: bool = True, path: Path = DEFAULT_ENGINE):
+        super().__init__([str(path), "net-uci", "--weights", str(weights)] + (["--int8"] if int8 else []))
         self._send("isready")
         self._read_until("readyok")
 

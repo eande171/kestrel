@@ -48,13 +48,13 @@ class Player:
     """Owns one rules engine process and picks moves with the shared evaluator."""
 
     def __init__(self, evaluator, max_depth: int = 4, width: int = 6, randomness: float = 0.01,
-                 reserve_seconds: float = 0.0, weights: Path | None = None):
+                 reserve_seconds: float = 0.0, weights: Path | None = None, int8: bool = True):
         self.evaluator = evaluator
         self.max_depth = min(max_depth, MAX_DEPTH)
         self.reserve_seconds = reserve_seconds
         self.engine = Engine()
         self.search = NetSearch(evaluator, self.engine, max_depth, width, randomness)
-        self.net = NetEngine(weights) if weights else None
+        self.net = NetEngine(weights, int8) if weights else None
         if self.net:
             self.net.set_option("Randomness", round(randomness * 1000))
             self.net.set_option("Seed", random.randrange(1, 2**31))
@@ -111,8 +111,9 @@ class Player:
         moves_left = clock.movestogo or 30
         return min(limit, remaining / moves_left + 0.75 * increment, remaining * 0.2)
 
-    def choose(self, moves: list[str], base_fen: str | None, clock: Clock) -> Decision:
-        """Returns the move to play after the given moves, at a fixed depth or deepening within the clock's budget."""
+    def choose(self, moves: list[str], base_fen: str | None, clock: Clock, replay: str | None = None,
+               avoid: set[str] | frozenset[str] = frozenset()) -> Decision:
+        """Returns the move to play after the given moves, replaying a remembered win or searching without avoided moves."""
         pondered = self.stop_pondering()
         self.engine.position(moves, fen=base_fen)
         state = self.engine.state()
@@ -121,6 +122,10 @@ class Player:
         start = time.monotonic()
         if len(state.legal) == 1:
             return Decision(state.legal[0], 0, 0.0, None, pondered)
+        if replay in state.legal:
+            return Decision(replay, 0, 0.0, None, pondered)
+        allowed = [move for move in state.legal if move not in avoid]
+        restrict = f" searchmoves {' '.join(allowed)}" if allowed and len(allowed) < len(state.legal) else ""
         if clock.depth is not None and min(self.max_depth, clock.depth) <= 1:
             move = greedy_move(self.evaluator, state.fen, state.repetitions, state.legal)
             return Decision(move, 0, time.monotonic() - start, None, pondered)
@@ -130,7 +135,7 @@ class Player:
             else:
                 budget = self.budget(clock, state.fen.split()[1] == "w")
                 limits = f"depth {self.max_depth}" + (f" movetime {int(budget * 1000)}" if budget < math.inf else "")
-            self.net.start(moves, base_fen, limits)
+            self.net.start(moves, base_fen, limits + restrict)
             result = self.net.result()
             return Decision(result.move, result.depth, time.monotonic() - start,
                             result.score if result.depth else None, pondered)

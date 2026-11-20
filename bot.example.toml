@@ -12,6 +12,7 @@ width = 6
 randomness = 10
 reserve_seconds = 1.0
 ponder = true
+int8 = true
 
 # Challenge Rules
 [challenges]

@@ -6,6 +6,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
+use cozy_chess::util::parse_uci_move;
+use cozy_chess::Move;
+
 use crate::game::Game;
 use crate::net::Network;
 use crate::netsearch::NetSearch;
@@ -14,7 +17,7 @@ use crate::uci::parse_position;
 const PONDER_SECONDS: f64 = 1e9;
 
 enum Job {
-    Search { game: Game, depth: u32, seconds: Option<f64> },
+    Search { game: Game, depth: u32, seconds: Option<f64>, root_moves: Option<Vec<Move>> },
     Randomness(f32),
     Seed(u64),
 }
@@ -32,7 +35,8 @@ pub fn run(network: Network, default_depth: u32) {
             match job {
                 Job::Randomness(r) => search.randomness = r,
                 Job::Seed(s) => search.seed(s),
-                Job::Search { game, depth, seconds } => {
+                Job::Search { game, depth, seconds, root_moves } => {
+                    search.root_moves = root_moves;
                     let best = search.choose(&game, depth, seconds);
                     let uci = best.map(|mv| game.uci(mv)).unwrap_or_else(|| "0000".into());
                     let mut out = io::stdout().lock();
@@ -73,8 +77,11 @@ pub fn run(network: Network, default_depth: u32) {
                     None if number("depth").is_some() && !tokens.contains(&"infinite") => None,
                     None => Some(PONDER_SECONDS),
                 };
+                let root_moves = tokens.iter().position(|&t| t == "searchmoves").map(|i| {
+                    tokens[i + 1..].iter().filter_map(|t| parse_uci_move(&game.board, t).ok()).collect::<Vec<Move>>()
+                });
                 stop.store(false, Ordering::Relaxed);
-                jobs.send(Job::Search { game: game.clone(), depth, seconds }).unwrap();
+                jobs.send(Job::Search { game: game.clone(), depth, seconds, root_moves }).unwrap();
             }
             Some("stop") => stop.store(true, Ordering::Relaxed),
             Some("quit") => {

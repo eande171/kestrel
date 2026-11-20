@@ -275,6 +275,10 @@ fn net_match(networks: [std::rc::Rc<net::Network>; 2], games: u32, seconds: f64,
                 "no_extensions" => sides[0].extensions = false,
                 "no_endgame_tuning" => sides[0].endgame_tuning = false,
                 "int8" => {}
+                other if other.starts_with("coverage") => {
+                    let percent: f32 = other["coverage".len()..].parse().expect("coverage needs a percent, like coverage90");
+                    sides[0].coverage = Some(percent / 100.0);
+                }
                 "" => {}
                 other => panic!("unknown setting {other}"),
             }

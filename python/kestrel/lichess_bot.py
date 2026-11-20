@@ -51,6 +51,7 @@ class BotConfig:
     randomness: float = 0.01
     reserve_seconds: float = 1.0
     ponder: bool = True
+    int8: bool = True
     max_games: int = 1
     variants: list[str] = field(default_factory=lambda: ["standard"])
     speeds: list[str] = field(default_factory=lambda: ["blitz", "rapid", "classical"])
@@ -281,7 +282,7 @@ class Bot:
     # Game Loop
     def play_game(self, game_id: str) -> None:
         player = Player(self.evaluator, self.config.max_depth, self.config.width, self.config.randomness,
-                        self.config.reserve_seconds, self.rust_weights)
+                        self.config.reserve_seconds, self.rust_weights, self.config.int8)
         session = {"color": None, "base_fen": None, "greeted": False, "last_played": -1}
         failures = 0
         try:

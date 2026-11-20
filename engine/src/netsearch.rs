@@ -11,6 +11,10 @@ pub const DEFAULT_WIDTH: usize = 6;
 const CACHE_LIMIT: usize = 200_000;
 const DEFAULT_GROWTH: f64 = 3.0;
 
+// Adaptive Width Bounds
+const MIN_WIDTH: usize = 2;
+const MAX_WIDTH: usize = 10;
+
 // Endgame Tuning
 const MOP_UP_WEIGHT: f32 = 0.05;
 const MOP_UP_LEAD: i32 = 4;
@@ -90,6 +94,8 @@ pub struct NetSearch {
     network: Rc<Network>,
     now: Box<dyn Fn() -> f64>,
     pub width: usize,
+    pub coverage: Option<f32>,
+    pub root_moves: Option<Vec<Move>>,
     pub randomness: f32,
     pub endgame_tuning: bool,
     pub extensions: bool,
@@ -103,6 +109,7 @@ pub struct NetSearch {
     root_depth: u32,
     draw_score: f32,
     history: Vec<u64>,
+    root_board: Board,
     priors: HashMap<Key, Vec<f32>>,
     values: HashMap<Key, f32>,
     best_child: HashMap<Key, Move>,
@@ -114,6 +121,8 @@ impl NetSearch {
             network,
             now: Box::new(now),
             width: DEFAULT_WIDTH,
+            coverage: None,
+            root_moves: None,
             randomness,
             endgame_tuning: true,
             extensions: true,
@@ -127,6 +136,7 @@ impl NetSearch {
             root_depth: 0,
             draw_score: 0.0,
             history: Vec::new(),
+            root_board: Board::default(),
             priors: HashMap::new(),
             values: HashMap::new(),
             best_child: HashMap::new(),
@@ -149,6 +159,7 @@ impl NetSearch {
             self.best_child.clear();
         }
         self.history = game.history().to_vec();
+        self.root_board = game.board.clone();
         let reps = game.repetitions();
         let board = &game.board;
         let chosen = match seconds {
@@ -164,7 +175,13 @@ impl NetSearch {
     }
 
     fn deepen(&mut self, board: &Board, reps: usize, max_depth: u32, deadline: f64) -> Option<Move> {
-        let policy_best = self.expand(board, reps).ok()?.first()?.mv;
+        let allowed = self.root_moves.clone();
+        let policy_best = self
+            .ordered_children(board, reps)
+            .ok()?
+            .into_iter()
+            .find(|c| allowed.as_ref().is_none_or(|a| a.contains(&c.mv)))?
+            .mv;
         self.deadline = deadline;
         let mut scored = None;
         let mut order: Option<Vec<Move>> = None;
@@ -216,6 +233,13 @@ impl NetSearch {
     // Root Scores
     fn root(&mut self, board: &Board, reps: usize, depth: u32, order: Option<&[Move]>) -> Result<Vec<(f32, Move)>, Timeout> {
         let mut selected = self.expand(board, reps)?;
+        if let Some(allowed) = self.root_moves.clone() {
+            selected.retain(|c| allowed.contains(&c.mv));
+            if selected.is_empty() {
+                let ordered = self.ordered_children(board, reps)?;
+                selected = ordered.into_iter().filter(|c| allowed.contains(&c.mv)).take(self.width).collect();
+            }
+        }
         if let Some(order) = order {
             let rank = |mv: &Move| order.iter().position(|m| m == mv).unwrap_or(order.len());
             selected.sort_by_key(|c| rank(&c.mv));
@@ -345,14 +369,38 @@ impl NetSearch {
     // Selected Children
     fn expand(&mut self, board: &Board, reps: usize) -> Result<Vec<Child>, Timeout> {
         let ordered = self.ordered_children(board, reps)?;
-        let mut selected: Vec<Child> = ordered.iter().take(self.width).cloned().collect();
+        let width = match self.coverage {
+            Some(target) => self.covering_width(&key(board, reps), target, board == &self.root_board),
+            None => self.width,
+        };
+        let mut selected: Vec<Child> = ordered.iter().take(width).cloned().collect();
         if self.extensions {
-            selected.extend(ordered.iter().skip(self.width).filter(|c| c.forcing).take(EXTRA_FORCING).cloned());
+            selected.extend(ordered.iter().skip(width).filter(|c| c.forcing).take(EXTRA_FORCING).cloned());
         }
         if let Some(hint) = self.best_child.get(&key(board, reps)) {
             selected.sort_by_key(|c| c.mv != *hint);
         }
         Ok(selected)
+    }
+
+    // Adaptive Width
+    fn covering_width(&self, k: &Key, target: f32, root: bool) -> usize {
+        let mut logits = self.priors[k].clone();
+        logits.sort_by(|a, b| b.total_cmp(a));
+        let top = logits.first().copied().unwrap_or(0.0);
+        let weights: Vec<f32> = logits.iter().map(|l| (l - top).exp()).collect();
+        let total: f32 = weights.iter().sum();
+        let mut covered = 0.0;
+        let mut count = 0;
+        for w in &weights {
+            covered += w / total;
+            count += 1;
+            if covered >= target {
+                break;
+            }
+        }
+        let least = if root { self.width } else { MIN_WIDTH };
+        count.clamp(least, MAX_WIDTH.max(least))
     }
 
     // Leaf Scores
