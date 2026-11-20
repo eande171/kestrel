@@ -26,6 +26,7 @@ commands:
         --shards N (8) --val-every N (50) --seed N (1)
   prep-evals --input PATH_OR_URL [options] turn the Lichess evaluation database (.jsonl.zst) into shards
         --out DIR (data/evals) --positions N (30000000) --keep-percent X (8)
+        --skip-percent X (0, skips the lines an earlier run with the same seed kept at this percent)
         --shards N (8) --val-every N (50) --seed N (1)";
 
 fn main() {
@@ -88,6 +89,7 @@ fn main() {
                 out_dir: opts.get("out").map(PathBuf::from).unwrap_or(d.out_dir),
                 positions: get_opt(&opts, "positions", d.positions),
                 keep_percent: get_opt(&opts, "keep-percent", d.keep_percent),
+                skip_percent: get_opt(&opts, "skip-percent", d.skip_percent),
                 shards: get_opt(&opts, "shards", d.shards).max(1),
                 val_every: get_opt(&opts, "val-every", d.val_every),
                 seed: get_opt(&opts, "seed", d.seed),

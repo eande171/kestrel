@@ -18,6 +18,7 @@ pub struct EvalConfig {
     pub out_dir: PathBuf,
     pub positions: u64,
     pub keep_percent: f64,
+    pub skip_percent: f64,
     pub shards: u32,
     pub val_every: u64,
     pub seed: u64,
@@ -30,6 +31,7 @@ impl Default for EvalConfig {
             out_dir: PathBuf::from("data/evals"),
             positions: 30_000_000,
             keep_percent: 8.0,
+            skip_percent: 0.0,
             shards: 8,
             val_every: 50,
             seed: 1,
@@ -99,6 +101,7 @@ pub fn run(cfg: &EvalConfig) -> io::Result<()> {
     let mut val = BufWriter::new(File::create(cfg.out_dir.join("val_000.bin"))?);
 
     let keep_below = (cfg.keep_percent / 100.0 * u64::MAX as f64) as u64;
+    let skip_below = (cfg.skip_percent / 100.0 * u64::MAX as f64) as u64;
     let mut rng = cfg.seed | 1;
     let mut stats = EvalStats::default();
     let mut line = Vec::new();
@@ -119,7 +122,7 @@ pub fn run(cfg: &EvalConfig) -> io::Result<()> {
         rng ^= rng << 13;
         rng ^= rng >> 7;
         rng ^= rng << 17;
-        if rng > keep_below {
+        if rng > keep_below || (cfg.skip_percent > 0.0 && rng <= skip_below) {
             continue;
         }
         stats.sampled += 1;
