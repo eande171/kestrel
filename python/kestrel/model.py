@@ -9,16 +9,26 @@ from .features import LEGACY_PLANES, NUM_PLANES
 
 
 class ResBlock(nn.Module):
-    def __init__(self, channels: int):
+    def __init__(self, channels: int, se: bool = False):
         super().__init__()
         self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(channels)
         self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(channels)
+        self.se = None
+        if se:
+            self.se = nn.Sequential(nn.Linear(channels, channels // 4), nn.ReLU(inplace=True),
+                                    nn.Linear(channels // 4, 2 * channels))
+            nn.init.zeros_(self.se[2].weight)
+            nn.init.zeros_(self.se[2].bias)
 
     def forward(self, x):
         y = torch.relu(self.bn1(self.conv1(x)))
         y = self.bn2(self.conv2(y))
+        if self.se is not None:
+            # Squeeze And Excitation
+            scale, shift = self.se(y.mean(dim=(2, 3))).chunk(2, dim=1)
+            y = y * (2 * torch.sigmoid(scale))[:, :, None, None] + shift[:, :, None, None]
         return torch.relu(x + y)
 
 
@@ -37,16 +47,17 @@ def _underpromotion_gather() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 class ChessNet(nn.Module):
     """Residual conv trunk with a query key policy head and a WDL value head."""
 
-    def __init__(self, blocks: int = 6, channels: int = 64, key_dim: int = 32, in_planes: int = NUM_PLANES):
+    def __init__(self, blocks: int = 6, channels: int = 64, key_dim: int = 32, in_planes: int = NUM_PLANES,
+                 se: bool = False):
         super().__init__()
-        self.config = {"blocks": blocks, "channels": channels, "key_dim": key_dim, "in_planes": in_planes}
+        self.config = {"blocks": blocks, "channels": channels, "key_dim": key_dim, "in_planes": in_planes, "se": se}
         self.in_planes = in_planes
         self.stem = nn.Sequential(
             nn.Conv2d(in_planes, channels, 3, padding=1, bias=False),
             nn.BatchNorm2d(channels),
             nn.ReLU(inplace=True),
         )
-        self.trunk = nn.Sequential(*[ResBlock(channels) for _ in range(blocks)])
+        self.trunk = nn.Sequential(*[ResBlock(channels, se) for _ in range(blocks)])
 
         # Policy Head
         self.key_dim = key_dim
@@ -101,8 +112,8 @@ def count_parameters(model: nn.Module) -> int:
 
 
 def checkpoint_config(ckpt: dict) -> dict:
-    """Returns a checkpoint's model config, treating older configs without in_planes as 19 input planes."""
-    return {"in_planes": LEGACY_PLANES, **ckpt["model_config"]}
+    """Returns a checkpoint's model config, treating older configs as 19 input planes and no squeeze and excitation."""
+    return {"in_planes": LEGACY_PLANES, "se": False, **ckpt["model_config"]}
 
 
 def load_model(path, device: str = "cpu") -> tuple[ChessNet, dict]:

@@ -42,6 +42,7 @@ def parse_args(argv=None):
     p.add_argument("--pin-gb", type=float, default=6.0, help="pin larger training data in system memory up to this size")
     p.add_argument("--run", default="runs/main")
     p.add_argument("--blocks", type=int, default=6)
+    p.add_argument("--se", action="store_true", help="add squeeze and excitation to each residual block")
     p.add_argument("--channels", type=int, default=64)
     p.add_argument("--batch-size", type=int, default=1024)
     p.add_argument("--lr", type=float, default=2e-3)
@@ -264,7 +265,7 @@ def main(argv=None) -> int:
         stop_file.unlink()
 
     torch.manual_seed(args.seed)
-    model = ChessNet(args.blocks, args.channels).to(device)
+    model = ChessNet(args.blocks, args.channels, se=args.se).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     state = {"step": 0, "epoch": 0, "epoch_pos": 0, "best_val": float("inf"), "bad_evals": 0, "train_seconds": 0.0}
 
@@ -277,7 +278,10 @@ def main(argv=None) -> int:
         state = ckpt["state"]
         log_event(run, f"resumed from step {state['step']} epoch {state['epoch']}")
     elif args.init:
-        model.load_state_dict(torch.load(args.init, map_location=device, weights_only=False)["model"])
+        missing, unexpected = model.load_state_dict(torch.load(args.init, map_location=device, weights_only=False)["model"],
+                                                    strict=False)
+        if unexpected or any(".se." not in name for name in missing):
+            raise SystemExit(f"--init weights do not fit this model: missing {missing}, unexpected {unexpected}")
         log_event(run, f"starting new run from the weights in {args.init}")
     else:
         log_event(run, "starting new run")

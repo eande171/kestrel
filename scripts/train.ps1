@@ -13,7 +13,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $env:PYTHONPATH = Join-Path $root "python"
 
-$trainArgs = @("-m", "kestrel.train", "--run", $Run, "--data") + $Data
+$trainArgs = @("-m", "kestrel.train", "--run", $Run, "--data") + ($Data -split ",")
 if ($Quiet) { $trainArgs += "--quiet" }
 if ($Extra) { $trainArgs += $Extra }
 
