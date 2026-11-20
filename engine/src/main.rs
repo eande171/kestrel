@@ -30,6 +30,8 @@ commands:
         --shards N (8) --val-every N (50) --seed N (1)
   net-eval --weights FILE --fens FILE --out FILE   write wdl and policy logits for each \"fen<TAB>repetitions\" line
   net-bench --weights FILE                          time the network on a few positions
+  net-match --weights FILE [--games N] [--seconds S] [--a no_check_extensions,no_extensions,no_endgame_tuning]
+        play a search with the listed settings against the default one at equal time
   net-search --weights FILE --fens FILE [--depth N] [--seconds S]
         search each \"fen<TAB>moves\" line and print the move, score, depth reached and positions expanded";
 
@@ -119,6 +121,14 @@ fn main() {
                 println!("{uci} {:.6} {} {} {:.3} {}", search.last_score, search.completed_depth, search.nodes,
                          start.elapsed().as_secs_f64(), search.evaluations);
             }
+        }
+        "net-match" => {
+            let Some(weights) = opts.get("weights") else {
+                eprintln!("net-match needs --weights");
+                std::process::exit(2);
+            };
+            let settings: Vec<String> = opts.get("a").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default();
+            net_match(std::rc::Rc::new(load_network(weights)), get_opt(&opts, "games", 40u32), get_opt(&opts, "seconds", 1.0f64), &settings);
         }
         "net-bench" => {
             let Some(weights) = opts.get("weights") else {
@@ -219,6 +229,61 @@ fn play(depth: u32, human_white: bool) {
 fn load_network(path: &str) -> net::Network {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
     net::Network::load(&bytes).unwrap_or_else(|e| panic!("{e}"))
+}
+
+// Search Variant Match
+const OPENINGS: [&str; 10] = [
+    "e2e4 e7e5 g1f3 b8c6 f1b5 a7a6",
+    "e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6",
+    "d2d4 d7d5 c2c4 e7e6 b1c3 g8f6",
+    "d2d4 g8f6 c2c4 g7g6 b1c3 f8g7 e2e4 d7d6",
+    "e2e4 e7e6 d2d4 d7d5 b1c3 g8f6",
+    "e2e4 c7c6 d2d4 d7d5 b1c3 d5e4 c3e4",
+    "c2c4 e7e5 b1c3 g8f6 g1f3 b8c6",
+    "d2d4 g8f6 c2c4 e7e6 g1f3 b7b6",
+    "e2e4 e7e5 g1f3 b8c6 f1c4 f8c5",
+    "d2d4 d7d5 c2c4 c7c6 g1f3 g8f6",
+];
+
+fn net_match(network: std::rc::Rc<net::Network>, games: u32, seconds: f64, settings: &[String]) {
+    let clock = Instant::now();
+    let make = |seed| netsearch::NetSearch::new(network.clone(), move || clock.elapsed().as_secs_f64(), 0.01, seed);
+    let (mut wins, mut draws, mut losses) = (0, 0, 0);
+    let mut depths = [0u64, 0u64];
+    let mut moves_made = [0u64, 0u64];
+    for g in 0..games {
+        let mut sides = [make(2 * g as u64 + 1), make(2 * g as u64 + 2)];
+        for name in settings {
+            match name.as_str() {
+                "no_check_extensions" => sides[0].check_extensions = 0,
+                "no_extensions" => sides[0].extensions = false,
+                "no_endgame_tuning" => sides[0].endgame_tuning = false,
+                "" => {}
+                other => panic!("unknown setting {other}"),
+            }
+        }
+        let mut game = Game::from_position("startpos", OPENINGS[(g as usize / 2) % OPENINGS.len()]).unwrap();
+        let a_is_white = g % 2 == 0;
+        while game.outcome() == Outcome::Ongoing && game.plies < 300 {
+            let white = game.board.side_to_move() == Color::White;
+            let side = if white == a_is_white { 0 } else { 1 };
+            let mv = sides[side].choose(&game, 10, Some(seconds)).expect("no move");
+            depths[side] += sides[side].completed_depth as u64;
+            moves_made[side] += 1;
+            game.play(mv).unwrap();
+        }
+        let outcome = game.outcome();
+        match outcome {
+            Outcome::Checkmate { winner } if (winner == Color::White) == a_is_white => wins += 1,
+            Outcome::Checkmate { .. } => losses += 1,
+            _ => draws += 1,
+        }
+        eprintln!("game {} {}: A {wins}-{draws}-{losses}", g + 1, outcome.name());
+    }
+    let score = (wins as f64 + draws as f64 / 2.0) / games as f64;
+    println!("A ({}) {wins}-{draws}-{losses} against the default search at {seconds}s per move, score {score:.3}, \
+              average depth {:.2} vs {:.2}", settings.join(","), depths[0] as f64 / moves_made[0].max(1) as f64,
+             depths[1] as f64 / moves_made[1].max(1) as f64);
 }
 
 fn net_bench(network: &net::Network) {

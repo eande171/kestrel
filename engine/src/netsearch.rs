@@ -27,9 +27,6 @@ const QUIESCENCE_PLIES: i32 = 4;
 const QUIESCENCE_WIDTH: usize = 4;
 pub const CHECK_EXTENSIONS: u32 = 2;
 
-// Leaf Batching
-const FIRST_LEAVES: usize = 2;
-
 #[derive(Clone)]
 struct Child {
     mv: Move,
@@ -249,19 +246,14 @@ impl NetSearch {
     fn search(&mut self, node: &Child, depth: u32, alpha: f32, beta: f32, ply: u32, extended: u32) -> Result<f32, Timeout> {
         self.history.push(node.board.hash());
         let selected = self.expand(&node.board, node.repetitions)?;
-        let mut batched = false;
         let mut best = f32::NEG_INFINITY;
         let mut best_move = None;
-        for (index, child) in selected.iter().enumerate() {
+        for child in &selected {
             let extend = self.extends(child, extended);
             let score = match self.terminal(child, ply + 1) {
                 Some(s) => s,
                 None if depth == 1 && extend == 0 => {
-                    if !self.values.contains_key(&key(&child.board, child.repetitions)) {
-                        let end = if batched { selected.len() } else { (index + FIRST_LEAVES).min(selected.len()) };
-                        self.cache_values(&selected[index..end]);
-                        batched = true;
-                    }
+                    self.cache_values(std::slice::from_ref(child));
                     self.leaf_score(child, alpha.max(best), beta, ply + 1)?
                 }
                 None => -self.search(child, depth - 1 + extend, -beta, -alpha.max(best), ply + 1, extended + extend)?,
