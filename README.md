@@ -216,8 +216,11 @@ $env:PYTHONPATH = "python"
 D:\chess-venv\Scripts\python.exe -m kestrel.evaluate --run runs/rep --depths 1 2 3 4 --games 20
 D:\chess-venv\Scripts\python.exe -m kestrel.evaluate --run runs/rep --depths 3 4 5 --games 20 --search-depth 2 --width 6
 D:\chess-venv\Scripts\python.exe -m kestrel.export_onnx --run runs/main
+D:\chess-venv\Scripts\python.exe -m kestrel.export_onnx --run runs/evals6 --int8
 D:\chess-venv\Scripts\python.exe python\tests\test_encoding.py data\shards_2026-10_20m_v2\val_000.bin
 ```
+
+`--int8` also writes `model_int8.onnx`, with the stem and residual trunk quantized to 8 bits (calibrated on 2,000 positions from the run's last data folder) and both heads left in float, since the policy head's query and key products lose too much when rounded. For evals6 it is 0.99 MB instead of 2.3 MB, about 1.6 times faster, picks the same top move as the float model on 94% of positions, and won 25-5-10 against it at 1 second per move. Quantizing the heads as well made it slightly faster but kept only 60% of the top moves.
 
 Without `--search-depth` the network plays its single highest scoring legal move. With it, the network looks ahead: at each position it takes its `--width` most likely moves, goes `--search-depth` plies deep, and scores the final positions with its value output. Checkmates and draws (including repetition) found along the way are scored exactly.
 
@@ -273,6 +276,8 @@ Results against `runs/rep` (6x64 trained on 20 million game positions), all at 1
 | evals10, 10x96 | same as evals6 | 28-5-7 | **47.7%** | **0.150** | 0.126 |
 
 evals6 and evals10 mated every queen, rook and queen against rook ending in the test. On the same 8 positions each, evals10 mated with a rook in 11.1 moves on average against rep's 16.2, and with rook and pawn against rook in 16.1 against 23.9.
+
+`python -m kestrel.resistance` measures how well a search holds lost positions: it starts from held out positions where Stockfish gives the side to move an expected score of 0.05 to 0.2, lets Kestrel defend at `--seconds` per move against the same model at `--attacker-seconds`, and counts draws, wins and games that last `--max-plies` as saved. `--option name=value` changes a search setting for the defender only, for example `--option check_extensions=0`.
 
 The Stockfish evaluations made the difference: they halved the damage on the real game mistakes and cut the value error by a quarter, where three times more game data alone barely moved either. evals10 is the most accurate network but takes about three times longer per position, so at equal time it searches shallower (depth 3.8 against 4.5) and evals6 plays slightly better. The bot uses evals6, which is also the same size as rep (574k parameters, 2.3 MB).
 

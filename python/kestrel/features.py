@@ -78,6 +78,28 @@ def fen_to_record(fen: str, repetitions: int = 0) -> np.ndarray:
     return rec
 
 
+def record_to_fen(rec: np.ndarray) -> str:
+    """Returns the FEN of a record, with the move number set to 1."""
+    codes = np.empty(64, dtype=np.uint8)
+    codes[0::2] = rec[:32] & 15
+    codes[1::2] = rec[:32] >> 4
+    rows = []
+    for rank in range(7, -1, -1):
+        row, empty = "", 0
+        for file in range(8):
+            code = codes[rank * 8 + file]
+            if code == 0:
+                empty += 1
+            else:
+                row += (str(empty) if empty else "") + PIECE_CHARS[code - 1]
+                empty = 0
+        rows.append(row + (str(empty) if empty else ""))
+    castling = "".join(ch for ch, bit in (("K", 1), ("Q", 2), ("k", 4), ("q", 8)) if rec[33] & bit) or "-"
+    side = "w" if rec[32] == 0 else "b"
+    ep = "-" if rec[34] == 255 else f"{chr(ord('a') + rec[34])}{'6' if side == 'w' else '3'}"
+    return f"{'/'.join(rows)} {side} {castling} {ep} {rec[45]} 1"
+
+
 def uci_to_squares(move: str) -> tuple[int, int, int]:
     """Returns absolute from square, to square and promotion code for a UCI move string."""
     f = (ord(move[0]) - ord("a")) + 8 * (int(move[1]) - 1)
