@@ -270,7 +270,7 @@ Results against `runs/rep` (6x64 trained on 20 million game positions), all at 1
 | **evals6, 6x64** | games6 data plus 30M Stockfish evaluations | **30-5-5** | 45.1% | 0.169 | **0.110** |
 | evals10, 10x96 | same as evals6 | 28-5-7 | **47.7%** | **0.150** | 0.126 |
 
-All three mated every queen, rook and queen against rook ending in the test. On the same 8 positions each, evals10 mated with a rook in 11.1 moves on average against rep's 16.2, and with rook and pawn against rook in 16.1 against 23.9.
+evals6 and evals10 mated every queen, rook and queen against rook ending in the test. On the same 8 positions each, evals10 mated with a rook in 11.1 moves on average against rep's 16.2, and with rook and pawn against rook in 16.1 against 23.9.
 
 The Stockfish evaluations made the difference: they halved the damage on the real game mistakes and cut the value error by a quarter, where three times more game data alone barely moved either. evals10 is the most accurate network but takes about three times longer per position, so at equal time it searches shallower (depth 3.8 against 4.5) and evals6 plays slightly better. The bot uses evals6, which is also the same size as rep (574k parameters, 2.3 MB).
 
