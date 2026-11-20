@@ -28,6 +28,8 @@ RESERVE_SECONDS = 30
 LEFTOVER_GRACE_SECONDS = 10
 FIRST_MOVE_MS = 5000
 RATE_LIMIT_PAUSE_MINUTES = 30
+FAILED_CHALLENGE_HOURS = 6
+NEVER_AGAIN = {"nobot", "generic", "variant", "standard"}
 
 
 def default_config_path() -> Path:
@@ -195,6 +197,11 @@ class Bot:
         self.last_activity = time.time()
         self.challenged: dict[str, float] = {}
         self.matchmaking_paused_until = 0.0
+        self.sent: dict[str, tuple[str, str]] = {}
+        self.closed: set[str] = set()
+        self.refuses: set[str] = set()
+        self.casual_only: set[str] = set()
+        self.refused_controls: dict[str, set[str]] = {}
 
     def active_games(self) -> int:
         """Returns running games plus accepted challenges whose game has not started yet."""
@@ -321,7 +328,8 @@ class Bot:
             name = bot.get("id", "").lower()
             rating = bot.get("perfs", {}).get(speed, {}).get("rating")
             recent = now - self.challenged.get(name, -math.inf) < c.matchmaking_cooldown_minutes * 60
-            if name == self.username.lower() or name in c.block_users or recent or rating is None:
+            refused = name in self.refuses or control in self.refused_controls.get(name, set())
+            if name == self.username.lower() or name in c.block_users or recent or refused or rating is None:
                 continue
             if ours.get("rating") and not ours.get("prov") and abs(rating - ours["rating"]) > c.matchmaking_max_rating_diff:
                 continue
@@ -332,18 +340,34 @@ class Bot:
         opponent = random.choice(candidates)
         name = opponent["id"].lower()
         self.challenged[name] = now
-        form = {"rated": str(c.matchmaking_rated).lower(), "clock.limit": limit, "clock.increment": increment,
+        rated = c.matchmaking_rated and name not in self.casual_only
+        form = {"rated": str(rated).lower(), "clock.limit": limit, "clock.increment": increment,
                 "color": "random", "variant": "standard"}
         reply = self.api.post(f"/api/challenge/{opponent['username']}", form, wait_if_limited=False)
         if self.api.rate_limited:
             self.matchmaking_paused_until = time.time() + RATE_LIMIT_PAUSE_MINUTES * 60
             log(f"matchmaking: paused for {RATE_LIMIT_PAUSE_MINUTES} minutes by the rate limit")
+        elif reply is None:
+            self.challenged[name] = now + FAILED_CHALLENGE_HOURS * 3600
         if reply and reply.get("id"):
             with self.lock:
                 self.reserved[reply["id"]] = time.time()
+            self.sent[reply["id"]] = (name, control)
             log(f"matchmaking: challenge {reply['id']} to {opponent['username']} "
-                f"({opponent['perfs'][speed]['rating']}) to {control} {'rated' if c.matchmaking_rated else 'casual'}")
+                f"({opponent['perfs'][speed]['rating']}) to {control} {'rated' if rated else 'casual'}")
             threading.Timer(RESERVE_SECONDS, self.cancel_unanswered, args=(reply["id"],)).start()
+
+    def learn_from_decline(self, challenge_id: str, reason: str) -> None:
+        """Stops offering a bot the games it has said it will not play."""
+        name, control = self.sent.get(challenge_id, ("", ""))
+        if not name:
+            return
+        if reason in NEVER_AGAIN:
+            self.refuses.add(name)
+        elif reason == "casual":
+            self.casual_only.add(name)
+        elif reason in ("timecontrol", "toofast", "tooslow"):
+            self.refused_controls.setdefault(name, set()).add(control)
 
     def cancel_leftover(self, challenge_id: str) -> None:
         """Cancels a challenge from this account that matchmaking did not send, once its reply has had time to arrive."""
@@ -356,8 +380,8 @@ class Bot:
     def cancel_unanswered(self, challenge_id: str) -> None:
         """Cancels a challenge Kestrel sent if no game has started from it, so it cannot be accepted much later."""
         with self.lock:
-            started = challenge_id in self.games
-        if not started:
+            settled = challenge_id in self.games or challenge_id in self.closed
+        if not settled:
             self.api.post(f"/api/challenge/{challenge_id}/cancel")
             self.release(challenge_id)
 
@@ -433,10 +457,14 @@ class Bot:
                         self.handle_challenge(event["challenge"])
                     elif kind in ("challengeCanceled", "challengeDeclined"):
                         challenge = event.get("challenge", {})
+                        with self.lock:
+                            self.closed.add(challenge.get("id", ""))
                         self.release(challenge.get("id", ""))
                         if kind == "challengeDeclined":
                             who = (challenge.get("destUser") or {}).get("name", "?")
-                            log(f"challenge {challenge.get('id')} declined by {who}: {challenge.get('declineReasonKey')}")
+                            reason = (challenge.get("declineReasonKey") or "").lower()
+                            log(f"challenge {challenge.get('id')} declined by {who}: {reason}")
+                            self.learn_from_decline(challenge.get("id", ""), reason)
                     elif kind == "gameStart":
                         game = event.get("game", {})
                         game_id = game.get("gameId") or game.get("id")
@@ -460,11 +488,14 @@ class Bot:
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", type=Path, default=None, help="bot.toml location, default KESTREL_BOT_CONFIG or the user config folder")
+    p.add_argument("--no-matchmaking", action="store_true", help="only accept challenges, whatever the config says")
     args = p.parse_args(argv)
     path = args.config or default_config_path()
     if not path.exists():
         raise SystemExit(f"config not found at {path}. Copy bot.example.toml there and edit it.")
     config = load_config(path)
+    if args.no_matchmaking:
+        config.matchmaking_enabled = False
     log(f"using config {path}")
     try:
         Bot(config).run()

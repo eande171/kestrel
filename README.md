@@ -138,6 +138,8 @@ It checks that the account has the BOT title, then listens for challenges. Games
 - The first move of each side gets at most 5 seconds, since Lichess aborts a game whose first moves take too long.
 - Challenges from the bot's own account that matchmaking did not send (left over from an earlier run) are cancelled after a 10 second grace, because Lichess can announce a new challenge on the event stream before replying to the request that created it.
 - Challenges that go unanswered for 30 seconds are cancelled. When Lichess rate limits new challenges, matchmaking pauses for 30 minutes and incoming challenges are still accepted.
+- Matchmaking learns from declines for the rest of the run: a bot that refuses bots or declines without a reason is not challenged again, one that wants casual games is offered casual games, and a declined time control is not offered to that bot again. A bot the challenge request fails for (for example after its 100 bot games a day) is skipped for 6 hours.
+- `--no-matchmaking` turns matchmaking off for one run without editing the config.
 
 `python/tests/test_lichess_bot.py` runs the whole bot against a local mock of the Lichess API (challenges declined and accepted, a full game, chat, and a check that the token is never logged), so it can be tested without an account.
 
