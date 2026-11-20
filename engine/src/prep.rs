@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Instant;
 
-use cozy_chess::{Board, Color, Move, Piece, Square};
+use cozy_chess::{Board, Color, Move, Square};
 use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
 use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
 
-use crate::game::{parse_san, Game};
+use crate::game::{parse_san, standard_move, Game};
 
 pub const RECORD_BYTES: usize = 48;
 pub const FORMAT_VERSION: u32 = 3;
@@ -443,15 +443,6 @@ fn piece_code(board: &Board, sq: Square) -> u8 {
         (Some(p), Some(Color::Black)) => 7 + p as u8,
         _ => 0,
     }
-}
-
-// Standard Castling Squares
-pub fn standard_move(board: &Board, mv: Move) -> Move {
-    if board.piece_on(mv.from) == Some(Piece::King) && board.color_on(mv.to) == Some(board.side_to_move()) {
-        let file = if mv.to.file() > mv.from.file() { cozy_chess::File::G } else { cozy_chess::File::C };
-        return Move { from: mv.from, to: Square::new(file, mv.from.rank()), promotion: None };
-    }
-    mv
 }
 
 // Record Layout

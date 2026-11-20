@@ -129,19 +129,11 @@ fn set_option(tokens: &[&str], engine: &mut Baseline) {
 }
 
 pub fn parse_position(tokens: &[&str]) -> Result<Game, String> {
-    let moves_at = tokens.iter().position(|&t| t == "moves");
-    let mut game = match tokens.get(1) {
-        Some(&"startpos") => Game::startpos(),
-        Some(&"fen") => {
-            let end = moves_at.unwrap_or(tokens.len());
-            Game::from_fen(&tokens[2..end].join(" "))?
-        }
-        _ => return Err("expected startpos or fen".to_string()),
-    };
-    if let Some(i) = moves_at {
-        for mv in &tokens[i + 1..] {
-            game.play_uci(mv)?;
-        }
+    let moves_at = tokens.iter().position(|&t| t == "moves").unwrap_or(tokens.len());
+    let moves = tokens.get(moves_at + 1..).unwrap_or(&[]).join(" ");
+    match tokens.get(1) {
+        Some(&"startpos") => Game::from_position("startpos", &moves),
+        Some(&"fen") if moves_at > 2 => Game::from_position(&tokens[2..moves_at].join(" "), &moves),
+        _ => Err("expected startpos or fen".to_string()),
     }
-    Ok(game)
 }

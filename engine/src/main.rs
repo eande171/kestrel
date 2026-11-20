@@ -93,8 +93,8 @@ fn main() {
             for line in std::fs::read_to_string(fens).expect("cannot read fens").lines() {
                 let (fen, reps) = line.split_once('\t').unwrap_or((line, "0"));
                 let board = Board::from_fen(fen, false).expect("bad fen");
-                let output = network.evaluate(&net::encode(&board, reps.trim().parse().unwrap_or(0)), Some(&all));
-                for v in output.wdl.iter().chain(&output.policy) {
+                let (wdl, policy) = network.evaluate(&net::encode(&board, reps.trim().parse().unwrap_or(0)), &all);
+                for v in wdl.iter().chain(&policy) {
                     bytes.extend_from_slice(&v.to_le_bytes());
                 }
             }
@@ -105,17 +105,14 @@ fn main() {
                 eprintln!("net-search needs --weights and --fens");
                 std::process::exit(2);
             };
-            let network = load_network(weights);
+            let network = std::rc::Rc::new(load_network(weights));
             let clock = Instant::now();
-            let mut search = netsearch::NetSearch::new(&network, move || clock.elapsed().as_secs_f64(), 6, 0.0, 1);
+            let mut search = netsearch::NetSearch::new(network, move || clock.elapsed().as_secs_f64(), 0.0, 1);
             let depth = get_opt(&opts, "depth", 4u32);
             let seconds: Option<f64> = opts.get("seconds").and_then(|s| s.parse().ok());
             for line in std::fs::read_to_string(fens).expect("cannot read fens").lines() {
                 let (fen, moves) = line.split_once('\t').unwrap_or((line, ""));
-                let mut game = Game::from_fen(fen).expect("bad fen");
-                for mv in moves.split_whitespace() {
-                    game.play_uci(mv).expect("bad move");
-                }
+                let game = Game::from_position(fen, moves).expect("bad position");
                 let start = Instant::now();
                 let best = search.choose(&game, depth, seconds);
                 let uci = best.map(|mv| game.uci(mv)).unwrap_or_else(|| "none".into());
@@ -228,12 +225,13 @@ fn net_bench(network: &net::Network) {
     let board = Board::from_fen("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10", false).unwrap();
     let planes = net::encode(&board, 0);
     let legal: Vec<usize> = game::legal_moves(&board).into_iter().map(|mv| net::policy_index(&board, mv)).collect();
-    for (label, indices) in [("value only", None), ("value and legal move policy", Some(legal.as_slice()))] {
+    for (label, policy) in [("value only", false), ("value and legal move policy", true)] {
         let runs = 2000;
         let start = Instant::now();
         let mut total = 0.0;
         for _ in 0..runs {
-            total += network.evaluate(&planes, indices).value();
+            let wdl = if policy { network.evaluate(&planes, &legal).0 } else { network.wdl(&planes) };
+            total += net::expected_score(wdl);
         }
         let ms = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
         println!("{label}: {ms:.3} ms per position (checksum {total:.3})");

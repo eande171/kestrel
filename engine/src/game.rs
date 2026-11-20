@@ -75,7 +75,6 @@ impl Game {
         legal_moves(&self.board)
     }
 
-    /// Returns the hashes of the positions since the last capture or pawn move, the current one last.
     pub fn history(&self) -> &[u64] {
         &self.hashes
     }
@@ -90,25 +89,47 @@ impl Game {
     }
 
     pub fn outcome(&self) -> Outcome {
-        if !any_move(&self.board) {
-            return if self.board.checkers().is_empty() {
-                Outcome::Stalemate
-            } else {
-                Outcome::Checkmate { winner: !self.board.side_to_move() }
-            };
-        }
-        if self.board.halfmove_clock() >= 100 {
-            return Outcome::FiftyMoves;
-        }
         let current = self.board.hash();
-        if self.hashes.iter().filter(|&&h| h == current).count() >= 3 {
-            return Outcome::Repetition;
-        }
-        if insufficient_material(&self.board) {
-            return Outcome::InsufficientMaterial;
-        }
-        Outcome::Ongoing
+        outcome_of(&self.board, self.hashes.iter().filter(|&&h| h == current).count())
     }
+
+    pub fn from_position(fen: &str, moves: &str) -> Result<Self, String> {
+        let mut game = if fen.is_empty() || fen == "startpos" { Game::startpos() } else { Game::from_fen(fen)? };
+        for mv in moves.split_whitespace() {
+            game.play_uci(mv)?;
+        }
+        Ok(game)
+    }
+}
+
+// Board Outcome
+pub fn outcome_of(board: &Board, occurrences: usize) -> Outcome {
+    if !any_move(board) {
+        return if board.checkers().is_empty() {
+            Outcome::Stalemate
+        } else {
+            Outcome::Checkmate { winner: !board.side_to_move() }
+        };
+    }
+    if board.halfmove_clock() >= 100 {
+        return Outcome::FiftyMoves;
+    }
+    if occurrences >= 3 {
+        return Outcome::Repetition;
+    }
+    if insufficient_material(board) {
+        return Outcome::InsufficientMaterial;
+    }
+    Outcome::Ongoing
+}
+
+// Standard Castling Move
+pub fn standard_move(board: &Board, mv: Move) -> Move {
+    if board.piece_on(mv.from) == Some(Piece::King) && board.color_on(mv.to) == Some(board.side_to_move()) {
+        let file = if mv.to.file() > mv.from.file() { cozy_chess::File::G } else { cozy_chess::File::C };
+        return Move { from: mv.from, to: cozy_chess::Square::new(file, mv.from.rank()), promotion: None };
+    }
+    mv
 }
 
 pub fn any_move(board: &Board) -> bool {
@@ -140,7 +161,7 @@ pub fn parse_san(board: &Board, text: &str) -> Result<Move, String> {
     }
 }
 
-fn insufficient_material(board: &Board) -> bool {
+pub fn insufficient_material(board: &Board) -> bool {
     let heavy = board.pieces(Piece::Pawn) | board.pieces(Piece::Rook) | board.pieces(Piece::Queen);
     if !heavy.is_empty() {
         return false;

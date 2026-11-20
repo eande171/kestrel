@@ -1,11 +1,13 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use cozy_chess::{Board, Color, Move, Piece, Rank};
 
-use crate::game::{any_move, legal_moves, Game};
-use crate::net::{encode, policy_index, Network};
+use crate::game::{legal_moves, outcome_of, Game, Outcome};
+use crate::net::{encode, expected_score, policy_index, Network};
 
 pub const MATE: f32 = 1.0;
+pub const DEFAULT_WIDTH: usize = 6;
 const CACHE_LIMIT: usize = 200_000;
 const DEFAULT_GROWTH: f64 = 3.0;
 
@@ -28,18 +30,11 @@ pub const CHECK_EXTENSIONS: u32 = 2;
 // Leaf Batching
 const FIRST_LEAVES: usize = 2;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Status {
-    Ongoing,
-    Checkmate,
-    Draw,
-}
-
 #[derive(Clone)]
 struct Child {
     mv: Move,
     board: Board,
-    status: Status,
+    outcome: Outcome,
     repetitions: usize,
     forcing: bool,
     check: bool,
@@ -53,7 +48,7 @@ fn key(board: &Board, repetitions: usize) -> Key {
 
 struct Timeout;
 
-/// Returns each side's material in pawns and each king's file and rank.
+// Material And Kings
 fn material_and_kings(board: &Board) -> ([i32; 2], [(i32, i32); 2]) {
     let mut material = [0; 2];
     let mut kings = [(0, 0); 2];
@@ -81,7 +76,7 @@ fn mop_up(material: [i32; 2], kings: [(i32, i32); 2], side: usize) -> f32 {
     if side == strong { bonus } else { -bonus }
 }
 
-/// Returns a value head score plus the mop-up bonus and, once the position is decided, a small material tie-break.
+// Endgame Adjusted Score
 fn endgame_adjusted(board: &Board, value: f32) -> f32 {
     let (material, kings) = material_and_kings(board);
     let side = board.side_to_move() as usize;
@@ -93,15 +88,10 @@ fn endgame_adjusted(board: &Board, value: f32) -> f32 {
     score.clamp(-0.999, 0.999)
 }
 
-fn insufficient_material(board: &Board) -> bool {
-    let heavy = board.pieces(Piece::Pawn) | board.pieces(Piece::Rook) | board.pieces(Piece::Queen);
-    heavy.is_empty() && (board.pieces(Piece::Knight) | board.pieces(Piece::Bishop)).len() <= 1
-}
-
-/// Negamax with alpha-beta pruning over the top policy moves, scored by the value head.
-pub struct NetSearch<'a> {
-    network: &'a Network,
-    now: Box<dyn Fn() -> f64 + 'a>,
+// Network Search
+pub struct NetSearch {
+    network: Rc<Network>,
+    now: Box<dyn Fn() -> f64>,
     pub width: usize,
     pub randomness: f32,
     pub endgame_tuning: bool,
@@ -121,13 +111,12 @@ pub struct NetSearch<'a> {
     best_child: HashMap<Key, Move>,
 }
 
-impl<'a> NetSearch<'a> {
-    /// Creates a search, with now returning seconds from any fixed point.
-    pub fn new(network: &'a Network, now: impl Fn() -> f64 + 'a, width: usize, randomness: f32, seed: u64) -> Self {
+impl NetSearch {
+    pub fn new(network: Rc<Network>, now: impl Fn() -> f64 + 'static, randomness: f32, seed: u64) -> Self {
         NetSearch {
             network,
             now: Box::new(now),
-            width,
+            width: DEFAULT_WIDTH,
             randomness,
             endgame_tuning: true,
             extensions: true,
@@ -147,9 +136,16 @@ impl<'a> NetSearch<'a> {
         }
     }
 
-    /// Returns the chosen move, searching exactly to depth when no time limit is given, or deepening until it.
+    pub fn seed(&mut self, seed: u64) {
+        self.rng = seed | 1;
+    }
+
+    // Choose A Move
     pub fn choose(&mut self, game: &Game, depth: u32, seconds: Option<f64>) -> Option<Move> {
+        let depth = depth.max(1);
         self.nodes = 0;
+        self.evaluations = 0;
+        self.deadline = f64::INFINITY;
         if self.values.len() > CACHE_LIMIT {
             self.priors.clear();
             self.values.clear();
@@ -158,30 +154,28 @@ impl<'a> NetSearch<'a> {
         self.history = game.history().to_vec();
         let reps = game.repetitions();
         let board = &game.board;
-        match seconds {
+        let chosen = match seconds {
             None => {
-                self.deadline = f64::INFINITY;
                 self.completed_depth = depth;
                 let scored = self.root(board, reps, depth, None).ok()?;
                 self.pick(&scored)
             }
             Some(limit) => self.deepen(board, reps, depth, (self.now)() + limit),
-        }
+        };
+        self.deadline = f64::INFINITY;
+        chosen
     }
 
     fn deepen(&mut self, board: &Board, reps: usize, max_depth: u32, deadline: f64) -> Option<Move> {
-        self.deadline = f64::INFINITY;
         let policy_best = self.expand(board, reps).ok()?.first()?.mv;
         self.deadline = deadline;
-        let (mut scored, mut order, mut previous): (Option<Vec<(f32, Move)>>, Option<Vec<Move>>, Option<f64>) =
-            (None, None, None);
+        let mut scored = None;
+        let mut order: Option<Vec<Move>> = None;
+        let mut previous: Option<f64> = None;
         self.completed_depth = 0;
         for depth in 2..=max_depth {
             let start = (self.now)();
-            match self.root(board, reps, depth, order.as_deref()) {
-                Ok(result) => scored = Some(result),
-                Err(Timeout) => break,
-            }
+            let Ok(result) = self.root(board, reps, depth, order.as_deref()) else { break };
             self.completed_depth = depth;
             let took = (self.now)() - start;
             let growth = match previous {
@@ -189,15 +183,15 @@ impl<'a> NetSearch<'a> {
                 _ => DEFAULT_GROWTH,
             };
             previous = Some(took);
-            let current = scored.as_ref().unwrap();
-            if current.iter().any(|&(s, _)| s >= MATE) || (self.now)() + took * growth > deadline {
+            let finished = result.iter().any(|&(s, _)| s >= MATE) || (self.now)() + took * growth > deadline;
+            let mut ranked = result.clone();
+            ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+            order = Some(ranked.into_iter().map(|(_, mv)| mv).collect());
+            scored = Some(result);
+            if finished {
                 break;
             }
-            let mut ranked = current.clone();
-            ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-            order = Some(ranked.into_iter().map(|(_, mv)| mv).collect());
         }
-        self.deadline = f64::INFINITY;
         match scored {
             Some(result) => self.pick(&result),
             None => {
@@ -208,12 +202,9 @@ impl<'a> NetSearch<'a> {
     }
 
     fn pick(&mut self, scored: &[(f32, Move)]) -> Option<Move> {
-        let top = scored.iter().cloned().fold(None, |best: Option<(f32, Move)>, item| match best {
-            Some(b) if b.0 >= item.0 => Some(b),
-            _ => Some(item),
-        })?;
+        let top = scored.iter().copied().reduce(|best, item| if item.0 > best.0 { item } else { best })?;
         let pool: Vec<(f32, Move)> = if self.randomness > 0.0 && top.0 < AHEAD_VALUE {
-            scored.iter().cloned().filter(|item| item.0 >= top.0 - self.randomness).collect()
+            scored.iter().copied().filter(|item| item.0 >= top.0 - self.randomness).collect()
         } else {
             vec![top]
         };
@@ -225,16 +216,15 @@ impl<'a> NetSearch<'a> {
         Some(mv)
     }
 
-    /// Returns exact scores for root moves that can be chosen, and upper bounds for the rest.
+    // Root Scores
     fn root(&mut self, board: &Board, reps: usize, depth: u32, order: Option<&[Move]>) -> Result<Vec<(f32, Move)>, Timeout> {
         let mut selected = self.expand(board, reps)?;
         if let Some(order) = order {
             let rank = |mv: &Move| order.iter().position(|m| m == mv).unwrap_or(order.len());
             selected.sort_by_key(|c| rank(&c.mv));
         }
-        let mut leaf_values = HashMap::new();
         if depth == 1 {
-            leaf_values = self.leaf_values(&selected);
+            self.cache_values(&selected);
         }
         self.root_depth = depth;
         let ahead = self.endgame_tuning && self.values[&key(board, reps)] > AHEAD_VALUE;
@@ -247,7 +237,7 @@ impl<'a> NetSearch<'a> {
             let extend = self.extends(child, 0);
             let score = match self.terminal(child, 1) {
                 Some(s) => s,
-                None if depth == 1 && extend == 0 => self.leaf_score(child, &leaf_values, alpha, f32::INFINITY, 1)?,
+                None if depth == 1 && extend == 0 => self.leaf_score(child, alpha, f32::INFINITY, 1)?,
                 None => -self.search(child, depth - 1 + extend, f32::NEG_INFINITY, -alpha, 1, extend)?,
             };
             scored.push((score, child.mv));
@@ -258,14 +248,8 @@ impl<'a> NetSearch<'a> {
 
     fn search(&mut self, node: &Child, depth: u32, alpha: f32, beta: f32, ply: u32, extended: u32) -> Result<f32, Timeout> {
         self.history.push(node.board.hash());
-        let result = self.search_inner(node, depth, alpha, beta, ply, extended);
-        self.history.pop();
-        result
-    }
-
-    fn search_inner(&mut self, node: &Child, depth: u32, alpha: f32, beta: f32, ply: u32, extended: u32) -> Result<f32, Timeout> {
         let selected = self.expand(&node.board, node.repetitions)?;
-        let mut leaf_values: HashMap<Move, f32> = HashMap::new();
+        let mut batched = false;
         let mut best = f32::NEG_INFINITY;
         let mut best_move = None;
         for (index, child) in selected.iter().enumerate() {
@@ -273,11 +257,12 @@ impl<'a> NetSearch<'a> {
             let score = match self.terminal(child, ply + 1) {
                 Some(s) => s,
                 None if depth == 1 && extend == 0 => {
-                    if !leaf_values.contains_key(&child.mv) {
-                        let batch = if index > 0 { &selected[index..] } else { &selected[..FIRST_LEAVES.min(selected.len())] };
-                        leaf_values.extend(self.leaf_values(batch));
+                    if !self.values.contains_key(&key(&child.board, child.repetitions)) {
+                        let end = if batched { selected.len() } else { (index + FIRST_LEAVES).min(selected.len()) };
+                        self.cache_values(&selected[index..end]);
+                        batched = true;
                     }
-                    self.leaf_score(child, &leaf_values, alpha.max(best), beta, ply + 1)?
+                    self.leaf_score(child, alpha.max(best), beta, ply + 1)?
                 }
                 None => -self.search(child, depth - 1 + extend, -beta, -alpha.max(best), ply + 1, extended + extend)?,
             };
@@ -292,6 +277,7 @@ impl<'a> NetSearch<'a> {
         if let Some(mv) = best_move {
             self.best_child.insert(key(&node.board, node.repetitions), mv);
         }
+        self.history.pop();
         Ok(best)
     }
 
@@ -299,16 +285,16 @@ impl<'a> NetSearch<'a> {
         (child.check && extended < self.check_extensions) as u32
     }
 
-    /// Returns the score of a finished child, ply moves from the root, for the side that moved into it.
+    // Terminal Scores
     fn terminal(&self, child: &Child, ply: u32) -> Option<f32> {
-        match child.status {
-            Status::Checkmate => Some(MATE + 0.01 * (self.root_depth as f32 - ply as f32 + 1.0).max(0.0)),
-            Status::Draw => Some(if ply % 2 == 1 { self.draw_score } else { -self.draw_score }),
-            Status::Ongoing => None,
+        match child.outcome {
+            Outcome::Ongoing => None,
+            Outcome::Checkmate { .. } => Some(MATE + 0.01 * (self.root_depth as f32 - ply as f32 + 1.0).max(0.0)),
+            _ => Some(if ply % 2 == 1 { self.draw_score } else { -self.draw_score }),
         }
     }
 
-    /// Returns every child of a position, highest policy first.
+    // Policy Ordered Children
     fn ordered_children(&mut self, board: &Board, reps: usize) -> Result<Vec<Child>, Timeout> {
         if (self.now)() > self.deadline {
             return Err(Timeout);
@@ -317,16 +303,20 @@ impl<'a> NetSearch<'a> {
         let children = self.children(board);
         let k = key(board, reps);
         if !self.priors.contains_key(&k) {
-            let indices: Vec<usize> = children.iter().map(|c| policy_index(board, c.mv)).collect();
-            let output = self.network.evaluate(&encode(board, reps), Some(&indices));
-            self.evaluations += 1;
-            self.values.insert(k, output.value());
-            self.priors.insert(k, output.policy);
+            let moves: Vec<Move> = children.iter().map(|c| c.mv).collect();
+            self.evaluate(board, reps, &moves);
         }
-        let prior = &self.priors[&k];
-        let mut order: Vec<usize> = (0..children.len()).collect();
-        order.sort_by(|&a, &b| prior[b].partial_cmp(&prior[a]).unwrap());
-        Ok(order.into_iter().map(|i| children[i].clone()).collect())
+        let mut ranked: Vec<(Child, f32)> = children.into_iter().zip(self.priors[&k].iter().copied()).collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+        Ok(ranked.into_iter().map(|(child, _)| child).collect())
+    }
+
+    fn evaluate(&mut self, board: &Board, reps: usize, moves: &[Move]) {
+        let indices: Vec<usize> = moves.iter().map(|&mv| policy_index(board, mv)).collect();
+        let (wdl, policy) = self.network.evaluate(&encode(board, reps), &indices);
+        self.evaluations += 1;
+        self.values.insert(key(board, reps), expected_score(wdl));
+        self.priors.insert(key(board, reps), policy);
     }
 
     fn children(&self, board: &Board) -> Vec<Child> {
@@ -342,30 +332,25 @@ impl<'a> NetSearch<'a> {
                 } else {
                     self.history.iter().filter(|&&h| h == hash).count()
                 };
-                let status = if !any_move(&next) {
-                    if next.checkers().is_empty() { Status::Draw } else { Status::Checkmate }
-                } else if next.halfmove_clock() >= 100 || repetitions >= 2 || insufficient_material(&next) {
-                    Status::Draw
-                } else {
-                    Status::Ongoing
-                };
+                let outcome = outcome_of(&next, repetitions + 1);
                 let pawn = board.piece_on(mv.from) == Some(Piece::Pawn);
                 let capture = board.color_on(mv.to) == Some(!board.side_to_move())
                     || (pawn && mv.from.file() != mv.to.file());
                 let seventh = pawn && mv.to.rank() == if white { Rank::Seventh } else { Rank::Second };
+                let mate = matches!(outcome, Outcome::Checkmate { .. });
                 Child {
                     mv,
-                    status,
+                    outcome,
                     repetitions,
                     forcing: capture || mv.promotion.is_some() || seventh,
-                    check: !next.checkers().is_empty() && status != Status::Checkmate,
+                    check: !next.checkers().is_empty() && !mate,
                     board: next,
                 }
             })
             .collect()
     }
 
-    /// Returns the top policy children plus a few forcing ones, with the best move from an earlier search first.
+    // Selected Children
     fn expand(&mut self, board: &Board, reps: usize) -> Result<Vec<Child>, Timeout> {
         let ordered = self.ordered_children(board, reps)?;
         let mut selected: Vec<Child> = ordered.iter().take(self.width).cloned().collect();
@@ -378,13 +363,12 @@ impl<'a> NetSearch<'a> {
         Ok(selected)
     }
 
-    /// Returns a depth 1 child's score for the side that moved, following forcing replies after a forcing move.
-    fn leaf_score(&mut self, child: &Child, leaf_values: &HashMap<Move, f32>, alpha: f32, beta: f32,
-                  ply: u32) -> Result<f32, Timeout> {
+    // Leaf Scores
+    fn leaf_score(&mut self, child: &Child, alpha: f32, beta: f32, ply: u32) -> Result<f32, Timeout> {
         if self.extensions && child.forcing {
             return Ok(-self.quiesce(child, -beta, -alpha, 0, ply)?);
         }
-        Ok(-leaf_values[&child.mv])
+        Ok(-self.adjusted_value(child))
     }
 
     fn quiesce(&mut self, node: &Child, alpha: f32, beta: f32, depth: i32, ply: u32) -> Result<f32, Timeout> {
@@ -393,21 +377,13 @@ impl<'a> NetSearch<'a> {
             return Ok(stand);
         }
         self.history.push(node.board.hash());
-        let result = self.quiesce_moves(node, alpha, beta, depth, ply, stand);
-        self.history.pop();
-        result
-    }
-
-    fn quiesce_moves(&mut self, node: &Child, alpha: f32, beta: f32, depth: i32, ply: u32, stand: f32) -> Result<f32, Timeout> {
         let forcing: Vec<Child> = self
             .ordered_children(&node.board, node.repetitions)?
             .into_iter()
             .filter(|c| c.forcing)
             .take(QUIESCENCE_WIDTH)
             .collect();
-        if !forcing.is_empty() {
-            self.leaf_values(&forcing);
-        }
+        self.cache_values(&forcing);
         let mut best = stand;
         for child in &forcing {
             let score = match self.terminal(child, ply + 1) {
@@ -419,6 +395,7 @@ impl<'a> NetSearch<'a> {
                 break;
             }
         }
+        self.history.pop();
         Ok(best)
     }
 
@@ -427,18 +404,12 @@ impl<'a> NetSearch<'a> {
         if self.endgame_tuning { endgame_adjusted(&child.board, value) } else { value }
     }
 
-    /// Returns value head scores for the ongoing children, evaluating the uncached ones.
-    fn leaf_values(&mut self, children: &[Child]) -> HashMap<Move, f32> {
-        let mut out = HashMap::new();
-        for child in children.iter().filter(|c| c.status == Status::Ongoing) {
-            let k = key(&child.board, child.repetitions);
-            if !self.values.contains_key(&k) {
-                let value = self.network.evaluate(&encode(&child.board, child.repetitions), None).value();
-                self.evaluations += 1;
-                self.values.insert(k, value);
+    // Leaf Evaluation
+    fn cache_values(&mut self, children: &[Child]) {
+        for child in children.iter().filter(|c| c.outcome == Outcome::Ongoing) {
+            if !self.values.contains_key(&key(&child.board, child.repetitions)) {
+                self.evaluate(&child.board, child.repetitions, &legal_moves(&child.board));
             }
-            out.insert(child.mv, self.adjusted_value(child));
         }
-        out
     }
 }
