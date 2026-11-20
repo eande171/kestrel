@@ -25,6 +25,9 @@ STREAM_ERRORS = (urllib.error.URLError, TimeoutError, ConnectionError, http.clie
 MAX_STREAM_FAILURES = 10
 MOVE_ATTEMPTS = 4
 RESERVE_SECONDS = 30
+LEFTOVER_GRACE_SECONDS = 10
+FIRST_MOVE_MS = 5000
+RATE_LIMIT_PAUSE_MINUTES = 30
 
 
 def default_config_path() -> Path:
@@ -147,8 +150,9 @@ class LichessApi:
         with self._request("GET", path) as response:
             return json.loads(response.read())
 
-    def post(self, path: str, form: dict | None = None) -> dict | None:
+    def post(self, path: str, form: dict | None = None, wait_if_limited: bool = True) -> dict | None:
         """Returns the JSON reply of a POST, or a bare ok when the reply is empty, and None if it failed."""
+        self.rate_limited = False
         for attempt in range(3):
             try:
                 with self._request("POST", path, form) as response:
@@ -156,7 +160,10 @@ class LichessApi:
                 return (json.loads(body) if body.strip() else None) or {"ok": True}
             except urllib.error.HTTPError as e:
                 if e.code == 429:
-                    log("rate limited by Lichess, waiting 60 seconds")
+                    self.rate_limited = True
+                    log(f"POST {path.split('?')[0]} rate limited by Lichess: {e.read()[:200]!r}")
+                    if not wait_if_limited:
+                        return None
                     time.sleep(60)
                     continue
                 log(f"POST {path.split('?')[0]} failed: HTTP {e.code} {e.read()[:200]!r}")
@@ -187,6 +194,7 @@ class Bot:
         self.stop = threading.Event()
         self.last_activity = time.time()
         self.challenged: dict[str, float] = {}
+        self.matchmaking_paused_until = 0.0
 
     def active_games(self) -> int:
         """Returns running games plus accepted challenges whose game has not started yet."""
@@ -239,11 +247,7 @@ class Bot:
 
     def handle_challenge(self, challenge: dict) -> None:
         if (challenge.get("challenger") or {}).get("id", "").lower() == self.username.lower():
-            with self.lock:
-                ours = challenge.get("id") in self.reserved
-            if not ours:
-                log(f"cancelling challenge {challenge.get('id')} left over from an earlier run")
-                self.api.post(f"/api/challenge/{challenge.get('id')}/cancel")
+            threading.Timer(LEFTOVER_GRACE_SECONDS, self.cancel_leftover, args=(challenge.get("id"),)).start()
             return
         reason = self.decline_reason(challenge)
         who = (challenge.get("challenger") or {}).get("name", "?")
@@ -296,7 +300,8 @@ class Bot:
     def matchmaking_loop(self) -> None:
         idle = self.config.matchmaking_idle_minutes * 60
         while not self.stop.wait(min(10.0, max(1.0, idle / 4))):
-            if self.active_games() == 0 and time.time() - self.last_activity >= idle:
+            if self.active_games() == 0 and time.time() - self.last_activity >= idle \
+                    and time.time() >= self.matchmaking_paused_until:
                 try:
                     self.challenge_someone()
                 except Exception as e:
@@ -329,13 +334,24 @@ class Bot:
         self.challenged[name] = now
         form = {"rated": str(c.matchmaking_rated).lower(), "clock.limit": limit, "clock.increment": increment,
                 "color": "random", "variant": "standard"}
-        reply = self.api.post(f"/api/challenge/{opponent['username']}", form)
+        reply = self.api.post(f"/api/challenge/{opponent['username']}", form, wait_if_limited=False)
+        if self.api.rate_limited:
+            self.matchmaking_paused_until = time.time() + RATE_LIMIT_PAUSE_MINUTES * 60
+            log(f"matchmaking: paused for {RATE_LIMIT_PAUSE_MINUTES} minutes by the rate limit")
         if reply and reply.get("id"):
             with self.lock:
                 self.reserved[reply["id"]] = time.time()
             log(f"matchmaking: challenge {reply['id']} to {opponent['username']} "
                 f"({opponent['perfs'][speed]['rating']}) to {control} {'rated' if c.matchmaking_rated else 'casual'}")
             threading.Timer(RESERVE_SECONDS, self.cancel_unanswered, args=(reply["id"],)).start()
+
+    def cancel_leftover(self, challenge_id: str) -> None:
+        """Cancels a challenge from this account that matchmaking did not send, once its reply has had time to arrive."""
+        with self.lock:
+            ours = challenge_id in self.reserved or challenge_id in self.games
+        if not ours:
+            log(f"cancelling challenge {challenge_id} left over from an earlier run")
+            self.api.post(f"/api/challenge/{challenge_id}/cancel")
 
     def cancel_unanswered(self, challenge_id: str) -> None:
         """Cancels a challenge Kestrel sent if no game has started from it, so it cannot be accepted much later."""
@@ -377,7 +393,8 @@ class Bot:
                 or len(moves) == session["last_played"]:
             return False
 
-        clock = Clock(state.get("wtime"), state.get("btime"), state.get("winc", 0), state.get("binc", 0))
+        clock = Clock(state.get("wtime"), state.get("btime"), state.get("winc", 0), state.get("binc", 0),
+                      movetime_ms=FIRST_MOVE_MS if len(moves) < 2 else None)
         decision = player.choose(moves, base_fen, clock)
         if decision.move == "0000":
             return False

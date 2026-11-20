@@ -51,6 +51,7 @@ class MockLichess:
         self.bot_moves = 0
         self.game_streams = 0
         self.finished = threading.Event()
+        self.closing = threading.Event()
         self.matchmade = threading.Event()
         self.sent_challenges: list[tuple[str, dict]] = []
         self.cancelled: list[str] = []
@@ -143,7 +144,7 @@ def make_handler(mock: MockLichess):
                 return
             if path == "/api/stream/event":
                 self.start_stream()
-                while not mock.finished.is_set():
+                while not mock.closing.is_set():
                     try:
                         self.write_line(mock.events.get(timeout=1))
                     except queue.Empty:
@@ -181,6 +182,8 @@ def make_handler(mock: MockLichess):
             parts = urlparse(self.path).path.strip("/").split("/")
             if parts[:2] == ["api", "challenge"] and len(parts) == 3:
                 mock.sent_challenges.append((parts[2], form))
+                mock.events.put(challenge("out1", "kestrelbot", "standard", "blitz", 180, 2))
+                time.sleep(0.5)
                 mock.matchmade.set()
                 return self.json_reply({"id": "out1", "status": "created", "direction": "out"})
             if parts[:2] == ["api", "challenge"] and parts[3] == "cancel":
@@ -237,6 +240,7 @@ def main() -> None:
     deadline = time.time() + 40
     while "out1" not in mock.cancelled and time.time() < deadline:
         time.sleep(0.5)
+    mock.closing.set()
     bot.terminate()
     bot.wait(timeout=10)
     server.shutdown()
@@ -258,6 +262,7 @@ def main() -> None:
     _, form = mock.sent_challenges[0]
     assert form["rated"] == "true" and (form["clock.limit"], form["clock.increment"]) in (("180", "2"), ("300", "3")), form
     assert mock.cancelled == ["stale1", "out1"], f"stale or unanswered challenge not cancelled: {mock.cancelled}"
+    assert not any("out1 left over" in line for line in output), "cancelled its own new challenge as a leftover"
     print(f"ok: declined chess960 (variant), bullet (tooFast) and a second blitz while busy (later), accepted blitz, "
           f"reconnected after a dropped stream, {mock.bot_moves} legal bot moves over {len(mock.moves)} plies, "
           f"greeting and goodbye sent, token never logged, then challenged the one online bot in rating range and cancelled it when unanswered, after cancelling one left from an earlier run")

@@ -118,7 +118,7 @@ def stockfish_agreement(evaluator: OnnxEvaluator, shard: Path, limit: int) -> st
     rows = rows[(rows[:, 46] & FLAG_ENGINE_EVAL) > 0][:limit]
     policy, value = evaluator(rows)
     best = policy_index_np(rows[:, 36], rows[:, 37], rows[:, 38], rows[:, 32] == 1)
-    target = 2 * rows[:, 47] / 255 - 1
+    target = 2 * rows[:, 47].astype(np.float32) / 255 - 1
     board = rows[:, :32]
     pieces = ((board & 15) != 0).sum(1) + ((board >> 4) != 0).sum(1)
     parts = []
