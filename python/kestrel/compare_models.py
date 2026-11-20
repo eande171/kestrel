@@ -153,7 +153,7 @@ def main(argv=None) -> None:
         for label, model in (("A", a), ("B", b)):
             print(f"Stockfish agreement {label}: {stockfish_agreement(model, args.eval_shard, args.eval_positions)}",
                   flush=True)
-    if args.mistakes and args.mistakes.exists():
+    if args.mistakes.is_file():
         suite = load(args.mistakes)
         for label, model in (("A", a), ("B", b)):
             print(f"game mistakes {label}: {grade(model, suite, args.mistake_seconds)}", flush=True)

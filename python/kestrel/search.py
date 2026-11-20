@@ -30,6 +30,10 @@ CONVERSION_CAP = 0.08
 EXTRA_FORCING = 3
 QUIESCENCE_PLIES = 4
 QUIESCENCE_WIDTH = 4
+CHECK_EXTENSIONS = 2
+
+# Leaf Batching
+FIRST_LEAVES = 2
 
 
 class SearchTimeout(Exception):
@@ -112,6 +116,7 @@ class NetSearch:
         self.draw_score = 0.0
         self.endgame_tuning = True
         self.extensions = True
+        self.check_extensions = CHECK_EXTENSIONS
         self.nodes = 0
         self.priors: dict[tuple[str, int], np.ndarray] = {}
         self.values: dict[tuple[str, int], float] = {}
@@ -181,27 +186,33 @@ class NetSearch:
         # Root Window
         scored, best = [], -math.inf
         for child in selected:
-            score = self._terminal(child, depth)
+            score = self._terminal(child, 1)
             alpha = best - self.randomness - 1e-9
-            if score is None and depth == 1:
-                score = self._leaf_score(moves, fen, child, leaf_values, alpha, math.inf)
+            extend = self._extends(child, 0)
+            if score is None and depth == 1 and not extend:
+                score = self._leaf_score(moves, fen, child, leaf_values, alpha, math.inf, 1)
             elif score is None:
-                score = -self._search(moves + [child.move], child.fen, child.repetitions, depth - 1, -math.inf, -alpha)
+                score = -self._search(moves + [child.move], child.fen, child.repetitions, depth - 1 + extend,
+                                      -math.inf, -alpha, 1, extend)
             scored.append((score, child.move))
             best = max(best, score)
         return scored
 
-    def _search(self, moves: list[str], fen: str, repetitions: int, depth: int, alpha: float, beta: float) -> float:
+    def _search(self, moves: list[str], fen: str, repetitions: int, depth: int, alpha: float, beta: float,
+                ply: int = 0, extended: int = 0) -> float:
         selected = self._expand(moves, fen, repetitions)
-        leaf_values = self._leaf_values(selected) if depth == 1 else {}
+        leaf_values: dict[str, float] = {}
         best, best_move = -math.inf, None
-        for child in selected:
-            score = self._terminal(child, depth)
-            if score is None and depth == 1:
-                score = self._leaf_score(moves, fen, child, leaf_values, max(alpha, best), beta)
+        for index, child in enumerate(selected):
+            score = self._terminal(child, ply + 1)
+            extend = self._extends(child, extended)
+            if score is None and depth == 1 and not extend:
+                if child.move not in leaf_values:
+                    leaf_values.update(self._leaf_values(selected[index:] if index else selected[:FIRST_LEAVES]))
+                score = self._leaf_score(moves, fen, child, leaf_values, max(alpha, best), beta, ply + 1)
             elif score is None:
-                score = -self._search(moves + [child.move], child.fen, child.repetitions, depth - 1,
-                                      -beta, -max(alpha, best))
+                score = -self._search(moves + [child.move], child.fen, child.repetitions, depth - 1 + extend,
+                                      -beta, -max(alpha, best), ply + 1, extended + extend)
             if score > best:
                 best, best_move = score, child.move
             if best >= beta:
@@ -210,13 +221,16 @@ class NetSearch:
             self.best_child[cache_key(fen, repetitions)] = best_move
         return best
 
-    def _terminal(self, child: Child, depth: int) -> float | None:
-        """Returns the score of a finished child for the side that moved into it, or None if the game goes on."""
+    def _extends(self, child: Child, extended: int) -> int:
+        """Returns 1 when a checking move should be searched a ply deeper, within the line's extension allowance."""
+        return int("+" in child.san and extended < self.check_extensions)
+
+    def _terminal(self, child: Child, ply: int) -> float | None:
+        """Returns the score of a finished child, ply moves from the root, for the side that moved into it."""
         if child.status.startswith("checkmate"):
-            return MATE + 0.01 * max(depth, 0)
+            return MATE + 0.01 * max(self.root_depth - ply + 1, 0)
         if child.status != "ongoing":
-            root_side_moved = (self.root_depth - depth) % 2 == 0
-            return self.draw_score if root_side_moved else -self.draw_score
+            return self.draw_score if ply % 2 == 1 else -self.draw_score
         return None
 
     def _ordered_children(self, moves: list[str], fen: str, repetitions: int) -> list[Child]:
@@ -248,13 +262,13 @@ class NetSearch:
         return selected
 
     def _leaf_score(self, moves: list[str], fen: str, child: Child, leaf_values: dict[str, float],
-                    alpha: float, beta: float) -> float:
+                    alpha: float, beta: float, ply: int) -> float:
         """Returns a depth 1 child's score for the side that moved, following forcing replies after a forcing move."""
         if self.extensions and is_forcing(child, fen.split()[1] == "w"):
-            return -self._quiesce(moves + [child.move], child, -beta, -alpha, 0)
+            return -self._quiesce(moves + [child.move], child, -beta, -alpha, 0, ply)
         return -leaf_values[child.move]
 
-    def _quiesce(self, moves: list[str], node: Child, alpha: float, beta: float, depth: int) -> float:
+    def _quiesce(self, moves: list[str], node: Child, alpha: float, beta: float, depth: int, ply: int) -> float:
         """Returns the score for the side to move, standing pat on the value head or playing forcing moves until quiet."""
         stand = self._adjusted_value(node)
         if stand >= beta or depth <= -QUIESCENCE_PLIES:
@@ -265,9 +279,9 @@ class NetSearch:
             self._leaf_values(forcing[:QUIESCENCE_WIDTH])
         best = stand
         for child in forcing[:QUIESCENCE_WIDTH]:
-            score = self._terminal(child, depth)
+            score = self._terminal(child, ply + 1)
             if score is None:
-                score = -self._quiesce(moves + [child.move], child, -beta, -max(alpha, best), depth - 1)
+                score = -self._quiesce(moves + [child.move], child, -beta, -max(alpha, best), depth - 1, ply + 1)
             best = max(best, score)
             if best >= beta:
                 break

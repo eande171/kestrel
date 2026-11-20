@@ -19,7 +19,7 @@ from .encoding import encode_planes, encode_targets
 from .features import FLAG_ENGINE_EVAL, RECORD_BYTES, read_records, record_width
 from .inference import TorchEvaluator
 from .match import play_match
-from .model import ChessNet, checkpoint_config, count_parameters
+from .model import ChessNet, checkpoint_config, count_parameters, load_model
 
 LOG_FIELDS = [
     "wall_time", "step", "epoch", "loss", "policy_loss", "value_loss", "policy_acc", "value_mse",
@@ -57,6 +57,9 @@ def parse_args(argv=None):
     p.add_argument("--ckpt-minutes", type=float, default=10.0)
     p.add_argument("--duty", type=float, default=1.0, help="fraction of time the GPU is busy, below 1 for quieter running")
     p.add_argument("--quiet", action="store_true", help="shortcut for --duty 0.5 and --batch-size 512")
+    p.add_argument("--teacher", default=None, help="checkpoint whose predictions are blended into the targets")
+    p.add_argument("--distill", type=float, default=0.5, help="weight of the teacher's predictions in the targets")
+    p.add_argument("--init", default=None, help="checkpoint to start a new run's weights from")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--no-keep-awake", action="store_true")
     args = p.parse_args(argv)
@@ -171,7 +174,7 @@ def value_targets(raw: torch.Tensor) -> torch.Tensor:
     return torch.where(has_eval, soft, hard)
 
 
-def losses(model, raw, value_weight):
+def losses(model, raw, value_weight, teacher=None, distill=0.0):
     planes = encode_planes(raw, model.in_planes)
     target_idx, _ = encode_targets(raw)
     target_wdl = value_targets(raw)
@@ -179,7 +182,14 @@ def losses(model, raw, value_weight):
         policy, value = model(planes)
     policy = policy.float()
     value = value.float()
-    policy_loss = F.cross_entropy(policy, target_idx)
+    policy_target = target_idx
+    if teacher is not None:
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+            teacher_policy, teacher_value = teacher(encode_planes(raw, teacher.in_planes))
+        hard = F.one_hot(target_idx, policy.shape[1]).float()
+        policy_target = distill * teacher_policy.float().softmax(-1) + (1 - distill) * hard
+        target_wdl = distill * teacher_value.float().softmax(-1) + (1 - distill) * target_wdl
+    policy_loss = F.cross_entropy(policy, policy_target)
     value_loss = F.cross_entropy(value, target_wdl)
     probs = value.softmax(-1)
     expected = probs[:, 2] - probs[:, 0]
@@ -265,8 +275,15 @@ def main(argv=None) -> int:
         optimizer.load_state_dict(ckpt["optimizer"])
         state = ckpt["state"]
         log_event(run, f"resumed from step {state['step']} epoch {state['epoch']}")
+    elif args.init:
+        model.load_state_dict(torch.load(args.init, map_location=device, weights_only=False)["model"])
+        log_event(run, f"starting new run from the weights in {args.init}")
     else:
         log_event(run, "starting new run")
+    teacher = None
+    if args.teacher:
+        teacher, _ = load_model(args.teacher, device)
+        log_event(run, f"distilling from {args.teacher} with weight {args.distill}")
     with open(run / "config.json", "w") as f:
         json.dump({**vars(args), "model_config": model.config, "parameters": count_parameters(model)}, f, indent=2)
 
@@ -328,7 +345,7 @@ def main(argv=None) -> int:
             batch = train[perm[state["epoch_pos"] : state["epoch_pos"] + args.batch_size]]
             if not on_gpu:
                 batch = batch.to(device, non_blocking=True)
-            loss, pl, vl, policy, target, mse = losses(model, batch, args.value_weight)
+            loss, pl, vl, policy, target, mse = losses(model, batch, args.value_weight, teacher, args.distill)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
