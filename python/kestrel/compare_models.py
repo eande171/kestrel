@@ -1,4 +1,4 @@
-"""Compares two exported models: a match at equal time, won endgame conversion, and agreement with Stockfish."""
+"""Compares two exported models: a match at equal time, won endgame conversion, real game mistakes, and agreement with Stockfish."""
 
 import argparse
 import random
@@ -11,6 +11,7 @@ from .engine_client import Engine, EngineError, State
 from .features import FLAG_ENGINE_EVAL, policy_index_np, read_records
 from .inference import OnnxEvaluator
 from .match import play_match
+from .mistakes import DEFAULT_SUITE, grade, load
 from .search import NetSearch
 
 # Endgame Suite
@@ -141,6 +142,8 @@ def main(argv=None) -> None:
     p.add_argument("--endgames", type=int, default=8, help="positions per endgame type, 0 to skip")
     p.add_argument("--eval-shard", type=Path, default=None, help="held out records with Stockfish scores")
     p.add_argument("--eval-positions", type=int, default=20000)
+    p.add_argument("--mistakes", type=Path, default=DEFAULT_SUITE, help="positions from real games, see mistakes.py")
+    p.add_argument("--mistake-seconds", type=float, default=3.0)
     args = p.parse_args(argv)
 
     a = OnnxEvaluator(args.a, args.threads)
@@ -150,6 +153,10 @@ def main(argv=None) -> None:
         for label, model in (("A", a), ("B", b)):
             print(f"Stockfish agreement {label}: {stockfish_agreement(model, args.eval_shard, args.eval_positions)}",
                   flush=True)
+    if args.mistakes and args.mistakes.exists():
+        suite = load(args.mistakes)
+        for label, model in (("A", a), ("B", b)):
+            print(f"game mistakes {label}: {grade(model, suite, args.mistake_seconds)}", flush=True)
     if args.endgames:
         for line in endgame_suite(a, b, b, args.endgames, args.seconds):
             print(f"endgames, defended by B: {line}", flush=True)
