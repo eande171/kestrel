@@ -20,6 +20,7 @@ Milestone 1 (this repository so far):
 ```
 engine/          Rust crate: board wrapper, perft tests, baseline engine, UCI loop, PGN to shards pipeline
 python/kestrel/  encoding, model, training, search, evaluation matches, ONNX export, UCI engine
+python/kestrel/suites/  positions from Kestrel's own games, scored by Stockfish, for grading models
 python/tests/    encoding consistency check against the Rust engine
 scripts/         train.ps1 (start or resume training), web.ps1 and play.ps1 (play the network)
 web/             browser UI served by python/kestrel/web.py
@@ -134,6 +135,10 @@ D:\chess-venv\Scripts\python.exe -m kestrel.lichess_bot --config C:\Users\<you>\
 
 It checks that the account has the BOT title, then listens for challenges. Games in progress are picked up again after a restart, and dropped connections reconnect on their own. Ctrl+C stops it.
 
+- The first move of each side gets at most 5 seconds, since Lichess aborts a game whose first moves take too long.
+- Challenges from the bot's own account that matchmaking did not send (left over from an earlier run) are cancelled after a 10 second grace, because Lichess can announce a new challenge on the event stream before replying to the request that created it.
+- Challenges that go unanswered for 30 seconds are cancelled. When Lichess rate limits new challenges, matchmaking pauses for 30 minutes and incoming challenges are still accepted.
+
 `python/tests/test_lichess_bot.py` runs the whole bot against a local mock of the Lichess API (challenges declined and accepted, a full game, chat, and a check that the token is never logged), so it can be tested without an account.
 
 ## Baseline engine
@@ -234,7 +239,40 @@ Results so far for the current model, with Stockfish at 200 ms per move:
 | Depth 5 | 0.45 | 2158 (2060 to 2254) |
 | Depth 6 | 1.1 | 2357 (2260 to 2455) |
 
-These are on Stockfish's `UCI_Elo` scale, which is not the same as a Lichess rating. Depths 3 to 5 were measured before alpha-beta pruning was added, but pruning picks the same moves, so those ratings still apply at the new speeds. Each depth used 60 games over three Stockfish levels (depth 3 used more).
+These are on Stockfish's `UCI_Elo` scale, which is not the same as a Lichess rating. Depths 3 to 5 were measured before alpha-beta pruning was added, but pruning picks the same moves, so those ratings still apply at the new speeds. Each depth used 60 games over three Stockfish levels (depth 3 used more). They were measured with `runs/rep`, which the models below have since replaced.
+
+### Comparing models
+
+```powershell
+D:\chess-venv\Scripts\python.exe -m kestrel.compare_models --a runs/evals6/model.onnx --b runs/rep/model.onnx `
+  --seconds 1.0 --eval-shard D:\chess-data\evals\val_000.bin
+```
+
+This reports, for candidate A against reference B:
+
+- agreement with Stockfish on held out evaluation records: how often the policy's top move is Stockfish's, and how far the value is from Stockfish's expected score
+- the game mistake suite (below), at `--mistake-seconds` (3) per position
+- won endgames (queen, rook, queen against rook, rook and pawn against rook) from random positions, defended by B
+- a match at equal time per move, so a bigger but slower network has to earn its extra depth
+
+The mistake suite in `python/kestrel/suites/mistakes.jsonl` holds positions from Kestrel's own Lichess games where its move lost at least 0.15 expected score by Stockfish's judgement, with Stockfish's score for every legal move. Models are graded offline by the expected score their choice loses. New games add to it:
+
+```powershell
+D:\chess-venv\Scripts\python.exe -m kestrel.mistakes --pgn games.pgn --player KestrelChess
+```
+
+Results against `runs/rep` (6x64 trained on 20 million game positions), all at 1 second per move in the match and 3 seconds per mistake position:
+
+| Model | Data | Match | Top move = Stockfish | Value error | Mistake suite loss (24 positions) |
+|---|---|---|---|---|---|
+| rep, 6x64 | 20M game positions | | 42.2% | 0.203 | 0.214 |
+| games6, 6x64 | 87M game positions, endgames x3 | 24-2-14 | 42.9% | 0.191 | 0.213 |
+| **evals6, 6x64** | games6 data plus 30M Stockfish evaluations | **30-5-5** | 45.1% | 0.169 | **0.110** |
+| evals10, 10x96 | same as evals6 | 28-5-7 | **47.7%** | **0.150** | 0.126 |
+
+All three mated every queen, rook and queen against rook ending in the test. On the same 8 positions each, evals10 mated with a rook in 11.1 moves on average against rep's 16.2, and with rook and pawn against rook in 16.1 against 23.9.
+
+The Stockfish evaluations made the difference: they halved the damage on the real game mistakes and cut the value error by a quarter, where three times more game data alone barely moved either. evals10 is the most accurate network but takes about three times longer per position, so at equal time it searches shallower (depth 3.8 against 4.5) and evals6 plays slightly better. The bot uses evals6, which is also the same size as rep (574k parameters, 2.3 MB).
 
 ## Licences
 
