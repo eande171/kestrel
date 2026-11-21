@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 
 thread_local! {
-    static SCRATCH: RefCell<(Vec<u8>, Vec<i32>)> = const { RefCell::new((Vec::new(), Vec::new())) };
+    static SCRATCH: RefCell<(Vec<u8>, Vec<i32>, Vec<i32>)> = const { RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
 }
 
 pub struct QConv {
@@ -48,7 +48,7 @@ impl QConv {
         let top = input.iter().fold(0.0f32, |a, &b| a.max(b));
         let act_scale = if top > 0.0 { top / 255.0 } else { 1.0 };
         let inverse = 1.0 / act_scale;
-        SCRATCH.with_borrow_mut(|(bytes, acc)| {
+        SCRATCH.with_borrow_mut(|(bytes, pairs, acc)| {
             acc.resize(64 * self.outputs, 0);
             if self.vnni {
                 if bytes.len() != 100 * self.inputs {
@@ -62,9 +62,18 @@ impl QConv {
                 }
                 accumulate_vnni(&self.quads, bytes, self.inputs / 4, self.outputs, acc);
             } else {
+                let half = self.inputs / 2;
+                if pairs.len() != 100 * half {
+                    *pairs = vec![0; 100 * half];
+                }
                 let level = |x: f32| (x * inverse + 0.5) as i32;
-                let pairs: Vec<i32> = input.chunks_exact(2).map(|p| level(p[0]) | (level(p[1]) << 16)).collect();
-                self.accumulate(&pairs, acc);
+                for (sq, square) in input.chunks_exact(self.inputs).enumerate() {
+                    let start = padded(sq) * half;
+                    for (dest, p) in pairs[start..start + half].iter_mut().zip(square.chunks_exact(2)) {
+                        *dest = level(p[0]) | (level(p[1]) << 16);
+                    }
+                }
+                self.accumulate(pairs, acc);
             }
             for (row, dest) in acc.chunks_exact(self.outputs).zip(out.chunks_exact_mut(self.outputs)) {
                 for (((d, &total), &scale), &bias) in dest.iter_mut().zip(row).zip(&self.scale).zip(&self.bias) {
@@ -76,55 +85,28 @@ impl QConv {
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     fn accumulate(&self, pairs: &[i32], acc: &mut [i32]) {
-        use std::arch::x86_64::*;
-        let (half, cout) = (self.inputs / 2, self.outputs);
-        let lanes = cout / 8;
-        for (sq, total) in acc.chunks_exact_mut(cout).enumerate() {
-            let mut sums = [unsafe { _mm256_setzero_si256() }; 12];
-            for (tap, nsq) in neighbours(sq) {
-                let row = &pairs[nsq * half..(nsq + 1) * half];
-                let taps = &self.weight[tap * half * cout * 2..(tap + 1) * half * cout * 2];
-                for (p, &pair) in row.iter().enumerate() {
-                    let w = &taps[p * cout * 2..(p + 1) * cout * 2];
-                    unsafe {
-                        let a = _mm256_set1_epi32(pair);
-                        for (k, sum) in sums.iter_mut().take(lanes).enumerate() {
-                            let wv = _mm256_loadu_si256(w.as_ptr().add(k * 16) as *const __m256i);
-                            *sum = _mm256_add_epi32(*sum, _mm256_madd_epi16(a, wv));
-                        }
-                    }
-                }
-            }
-            for (k, sum) in sums.iter().take(lanes).enumerate() {
-                unsafe { _mm256_storeu_si256(total.as_mut_ptr().add(k * 8) as *mut __m256i, *sum) };
+        let half = self.inputs / 2;
+        assert!(self.weight.len() >= 18 * half * self.outputs && pairs.len() >= 100 * half && acc.len() >= 64 * self.outputs);
+        unsafe {
+            match self.outputs {
+                32 => avx2_kernel::<4>(&self.weight, pairs, half, acc),
+                64 => avx2_kernel::<8>(&self.weight, pairs, half, acc),
+                96 => avx2_kernel::<12>(&self.weight, pairs, half, acc),
+                _ => portable_pairs(&self.weight, pairs, half, self.outputs, acc),
             }
         }
     }
 
     #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
     fn accumulate(&self, pairs: &[i32], acc: &mut [i32]) {
-        use std::arch::wasm32::*;
-        let (half, cout) = (self.inputs / 2, self.outputs);
-        let lanes = cout / 4;
-        for (sq, total) in acc.chunks_exact_mut(cout).enumerate() {
-            let mut sums = [i32x4_splat(0); 24];
-            for (tap, nsq) in neighbours(sq) {
-                let row = &pairs[nsq * half..(nsq + 1) * half];
-                let taps = &self.weight[tap * half * cout * 2..(tap + 1) * half * cout * 2];
-                for (p, &pair) in row.iter().enumerate() {
-                    if pair == 0 {
-                        continue;
-                    }
-                    let w = &taps[p * cout * 2..(p + 1) * cout * 2];
-                    let a = i32x4_splat(pair);
-                    for (k, sum) in sums.iter_mut().take(lanes).enumerate() {
-                        let wv = unsafe { v128_load(w.as_ptr().add(k * 8) as *const v128) };
-                        *sum = i32x4_add(*sum, i32x4_dot_i16x8(a, wv));
-                    }
-                }
-            }
-            for (k, sum) in sums.iter().take(lanes).enumerate() {
-                unsafe { v128_store(total.as_mut_ptr().add(k * 4) as *mut v128, *sum) };
+        let half = self.inputs / 2;
+        assert!(self.weight.len() >= 18 * half * self.outputs && pairs.len() >= 100 * half && acc.len() >= 64 * self.outputs);
+        unsafe {
+            match self.outputs {
+                32 => simd128_kernel::<8>(&self.weight, pairs, half, acc),
+                64 => simd128_kernel::<16>(&self.weight, pairs, half, acc),
+                96 => simd128_kernel::<24>(&self.weight, pairs, half, acc),
+                _ => portable_pairs(&self.weight, pairs, half, self.outputs, acc),
             }
         }
     }
@@ -132,16 +114,82 @@ impl QConv {
     #[cfg(not(any(all(target_arch = "x86_64", target_feature = "avx2"),
                   all(target_arch = "wasm32", target_feature = "simd128"))))]
     fn accumulate(&self, pairs: &[i32], acc: &mut [i32]) {
-        let (half, cout) = (self.inputs / 2, self.outputs);
-        for (sq, total) in acc.chunks_exact_mut(cout).enumerate() {
-            for (tap, nsq) in neighbours(sq) {
+        portable_pairs(&self.weight, pairs, self.inputs / 2, self.outputs, acc);
+    }
+}
+
+// Pair Kernels
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+unsafe fn avx2_kernel<const L: usize>(weight: &[i16], pairs: &[i32], half: usize, acc: &mut [i32]) {
+    use std::arch::x86_64::*;
+    let cout = L * 8;
+    unsafe {
+        for sq in 0..64 {
+            let (rank, file) = (sq / 8, sq % 8);
+            let mut sums = [_mm256_setzero_si256(); L];
+            for tap in 0..9 {
+                let row = pairs.as_ptr().add(((rank + tap / 3) * 10 + file + tap % 3) * half);
+                let taps = weight.as_ptr().add(tap * half * cout * 2);
                 for p in 0..half {
-                    let pair = pairs[nsq * half + p];
-                    let (lo, hi) = (pair as i16 as i32, pair >> 16);
-                    let w = &self.weight[(tap * half + p) * cout * 2..(tap * half + p + 1) * cout * 2];
-                    for (co, t) in total.iter_mut().enumerate() {
-                        *t += lo * w[co * 2] as i32 + hi * w[co * 2 + 1] as i32;
+                    let a = _mm256_set1_epi32(*row.add(p));
+                    let w = taps.add(p * cout * 2);
+                    for (k, sum) in sums.iter_mut().enumerate() {
+                        let wv = _mm256_loadu_si256(w.add(k * 16) as *const __m256i);
+                        *sum = _mm256_add_epi32(*sum, _mm256_madd_epi16(a, wv));
                     }
+                }
+            }
+            for (k, sum) in sums.iter().enumerate() {
+                _mm256_storeu_si256(acc.as_mut_ptr().add(sq * cout + k * 8) as *mut __m256i, *sum);
+            }
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+unsafe fn simd128_kernel<const N: usize>(weight: &[i16], pairs: &[i32], half: usize, acc: &mut [i32]) {
+    use std::arch::wasm32::*;
+    let cout = N * 4;
+    unsafe {
+        for sq in 0..64 {
+            let (rank, file) = (sq / 8, sq % 8);
+            let mut sums = [i32x4_splat(0); N];
+            for tap in 0..9 {
+                let row = pairs.as_ptr().add(((rank + tap / 3) * 10 + file + tap % 3) * half);
+                let taps = weight.as_ptr().add(tap * half * cout * 2);
+                for p in 0..half {
+                    let pair = *row.add(p);
+                    if pair == 0 {
+                        continue;
+                    }
+                    let a = i32x4_splat(pair);
+                    let w = taps.add(p * cout * 2);
+                    for (k, sum) in sums.iter_mut().enumerate() {
+                        *sum = i32x4_add(*sum, i32x4_dot_i16x8(a, v128_load(w.add(k * 8) as *const v128)));
+                    }
+                }
+            }
+            for (k, sum) in sums.iter().enumerate() {
+                v128_store(acc.as_mut_ptr().add(sq * cout + k * 4) as *mut v128, *sum);
+            }
+        }
+    }
+}
+
+fn portable_pairs(weight: &[i16], pairs: &[i32], half: usize, cout: usize, acc: &mut [i32]) {
+    for (sq, total) in acc.chunks_exact_mut(cout).enumerate() {
+        total.fill(0);
+        let (rank, file) = (sq / 8, sq % 8);
+        for tap in 0..9 {
+            let start = ((rank + tap / 3) * 10 + file + tap % 3) * half;
+            for (p, &pair) in pairs[start..start + half].iter().enumerate() {
+                if pair == 0 {
+                    continue;
+                }
+                let (lo, hi) = (pair as i16 as i32, pair >> 16);
+                let w = &weight[(tap * half + p) * cout * 2..(tap * half + p + 1) * cout * 2];
+                for (t, w) in total.iter_mut().zip(w.chunks_exact(2)) {
+                    *t += lo * w[0] as i32 + hi * w[1] as i32;
                 }
             }
         }
