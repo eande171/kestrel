@@ -31,9 +31,9 @@ commands:
   net-eval --weights FILE --fens FILE --out FILE   write wdl and policy logits for each \"fen<TAB>repetitions\" line
   net-bench --weights FILE                          time the network on a few positions
   net-uci --weights FILE [--depth N]               the network search as a UCI engine, with go infinite and stop for pondering
-  net-match --weights FILE [--b-weights FILE] [--games N] [--seconds S] [--int8] [--a no_check_extensions,no_extensions,no_endgame_tuning]
+  net-match --weights FILE [--b-weights FILE] [--games N] [--seconds S] [--int8] [--a no_check_extensions,no_extensions,no_endgame_tuning,reductions]
         play a search with the listed settings against the default one at equal time, B using its own weights if given
-  net-search --weights FILE --fens FILE [--depth N] [--seconds S]
+  net-search --weights FILE --fens FILE [--depth N] [--seconds S] [--reductions]
         search each \"fen<TAB>moves\" line and print the move, score, depth reached and positions expanded";
 
 fn main() {
@@ -111,6 +111,7 @@ fn main() {
             let network = std::rc::Rc::new(load_network(weights, opts.contains_key("int8")));
             let clock = Instant::now();
             let mut search = netsearch::NetSearch::new(network, move || clock.elapsed().as_secs_f64(), 0.0, 1);
+            search.reductions = opts.contains_key("reductions");
             let depth = get_opt(&opts, "depth", 4u32);
             let seconds: Option<f64> = opts.get("seconds").and_then(|s| s.parse().ok());
             for line in std::fs::read_to_string(fens).expect("cannot read fens").lines() {
@@ -275,6 +276,7 @@ fn net_match(networks: [std::rc::Rc<net::Network>; 2], games: u32, seconds: f64,
                 "no_check_extensions" => sides[0].check_extensions = 0,
                 "no_extensions" => sides[0].extensions = false,
                 "no_endgame_tuning" => sides[0].endgame_tuning = false,
+                "reductions" => sides[0].reductions = true,
                 "int8" => {}
                 other if other.starts_with("coverage") => {
                     let percent: f32 = other["coverage".len()..].parse().expect("coverage needs a percent, like coverage90");

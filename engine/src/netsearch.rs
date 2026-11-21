@@ -31,6 +31,11 @@ const QUIESCENCE_PLIES: i32 = 4;
 const QUIESCENCE_WIDTH: usize = 4;
 pub const CHECK_EXTENSIONS: u32 = 2;
 
+// Late Move Reductions
+const REDUCE_FROM: usize = 3;
+const REDUCE_MIN_DEPTH: u32 = 3;
+const NULL_WINDOW: f32 = 1e-4;
+
 #[derive(Clone)]
 struct Child {
     mv: Move,
@@ -100,6 +105,7 @@ pub struct NetSearch {
     pub endgame_tuning: bool,
     pub extensions: bool,
     pub check_extensions: u32,
+    pub reductions: bool,
     pub nodes: u64,
     pub evaluations: u64,
     pub completed_depth: u32,
@@ -127,6 +133,7 @@ impl NetSearch {
             endgame_tuning: true,
             extensions: true,
             check_extensions: CHECK_EXTENSIONS,
+            reductions: false,
             nodes: 0,
             evaluations: 0,
             completed_depth: 0,
@@ -272,15 +279,26 @@ impl NetSearch {
         let selected = self.expand(&node.board, node.repetitions)?;
         let mut best = f32::NEG_INFINITY;
         let mut best_move = None;
-        for child in &selected {
+        for (index, child) in selected.iter().enumerate() {
             let extend = self.extends(child, extended);
+            let floor = alpha.max(best);
+            let reduce = self.reductions && index >= REDUCE_FROM && depth >= REDUCE_MIN_DEPTH && extend == 0
+                && !child.forcing && !node.check;
             let score = match self.terminal(child, ply + 1) {
                 Some(s) => s,
                 None if depth == 1 && extend == 0 => {
                     self.cache_values(std::slice::from_ref(child));
-                    self.leaf_score(child, alpha.max(best), beta, ply + 1)?
+                    self.leaf_score(child, floor, beta, ply + 1)?
                 }
-                None => -self.search(child, depth - 1 + extend, -beta, -alpha.max(best), ply + 1, extended + extend)?,
+                None if reduce => {
+                    let probe = -self.search(child, depth - 2, -floor - NULL_WINDOW, -floor, ply + 1, extended)?;
+                    if probe > floor {
+                        -self.search(child, depth - 1, -beta, -floor, ply + 1, extended)?
+                    } else {
+                        probe
+                    }
+                }
+                None => -self.search(child, depth - 1 + extend, -beta, -floor, ply + 1, extended + extend)?,
             };
             if score > best {
                 best = score;

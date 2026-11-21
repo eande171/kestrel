@@ -1,0 +1,6 @@
+*
+!engine/Cargo.toml
+!engine/Cargo.lock
+!engine/src/
+!python/kestrel/
+**/__pycache__

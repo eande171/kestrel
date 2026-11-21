@@ -1,0 +1,17 @@
+# Kestrel Lichess Bot
+services:
+  kestrel:
+    build: .
+    image: kestrel-bot
+    restart: unless-stopped
+    stop_grace_period: 30s
+    volumes:
+      - ./config:/config
+    environment:
+      LICHESS_BOT_TOKEN_FILE: /run/secrets/lichess_token
+    secrets:
+      - lichess_token
+
+secrets:
+  lichess_token:
+    file: ./secrets/lichess_token.txt

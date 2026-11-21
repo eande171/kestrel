@@ -138,12 +138,38 @@ It checks that the account has the BOT title, then listens for challenges. Games
 
 - The first move of each side gets at most 5 seconds, since Lichess aborts a game whose first moves take too long.
 - Challenges from the bot's own account that matchmaking did not send (left over from an earlier run) are cancelled after a 10 second grace, because Lichess can announce a new challenge on the event stream before replying to the request that created it.
-- Challenges that go unanswered for 30 seconds are cancelled. When Lichess rate limits new challenges, matchmaking pauses for 30 minutes and incoming challenges are still accepted.
-- Matchmaking learns from declines for the rest of the run: a bot that refuses bots or declines without a reason is not challenged again, one that wants casual games is offered casual games, and a declined time control is not offered to that bot again. A bot the challenge request fails for (for example after its 100 bot games a day) is skipped for 6 hours.
+- Challenges that go unanswered for 30 seconds are cancelled. When Lichess rate limits new challenges, matchmaking pauses for 30 minutes, doubling with each limit in a row up to 4 hours, and incoming challenges are still accepted.
+- Matchmaking learns from declines and keeps what it learned in `refusals.json` next to the config: a bot that refuses bots or declines without a reason is not challenged again, one that wants casual games is offered casual games, and a declined time control is not offered to that bot again. A bot the challenge request fails for (for example after its 100 bot games a day) is skipped for 6 hours.
 - `--no-matchmaking` turns matchmaking off for one run without editing the config.
 - When a `model.kstn` (from `python -m kestrel.export_weights`) sits next to the configured `model.onnx`, the bot searches and ponders with the Rust engine (`kestrel net-uci`) instead of Python and ONNX Runtime. It reaches about one ply deeper in the same time, keeps its caches between moves and pondering, and logs which search it uses at startup.
 
 `python/tests/test_lichess_bot.py` runs the whole bot against a local mock of the Lichess API (challenges declined and accepted, a full game, chat, and a check that the token is never logged), so it can be tested without an account.
+
+### Docker
+
+The `Dockerfile` builds the Rust engine and runs the bot in a slim Python image as an unprivileged user. `compose.yaml` keeps it running across restarts and reboots.
+
+```
+kestrel/
+├── compose.yaml, Dockerfile, .dockerignore, engine/, python/   (from this repository)
+├── config/
+│   ├── bot.toml          (token_file is ignored here; the token comes from the secret)
+│   ├── model.onnx
+│   └── model.kstn
+└── secrets/
+    └── lichess_token.txt
+```
+
+```bash
+chown -R 1000:1000 config secrets && chmod 600 secrets/lichess_token.txt
+docker compose up -d --build
+docker compose logs -f
+```
+
+- The token reaches the container as a Docker secret through `LICHESS_BOT_TOKEN_FILE`; it is never part of the image or the config folder.
+- `config/` is mounted read write, so opponent memory and `refusals.json` survive restarts and image rebuilds. Swap models by replacing the two model files and running `docker compose restart`.
+- `docker compose down` sends Ctrl+C (SIGINT), so the bot stops cleanly.
+- The engine is built for x86-64-v3 (AVX2). It picks the AVX-VNNI kernel at runtime where the CPU has it and the AVX2 kernel otherwise, with identical results. For an older CPU without AVX2, build with `docker compose build --build-arg TARGET_CPU=x86-64`, which is several times slower.
 
 ## Baseline engine
 

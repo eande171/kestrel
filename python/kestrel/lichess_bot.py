@@ -95,14 +95,15 @@ def speed_of(limit: int, increment: int) -> str:
     return "classical"
 
 def load_config(path: Path) -> BotConfig:
-    """Returns the bot settings from a TOML file, reading the token from the file, token_file or LICHESS_BOT_TOKEN."""
+    """Returns the bot settings from a TOML file, taking the token from LICHESS_BOT_TOKEN, the file, LICHESS_BOT_TOKEN_FILE or token_file."""
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     lichess, engine, challenges, chat, matchmaking = (
         data.get(k, {}) for k in ("lichess", "engine", "challenges", "chat", "matchmaking"))
 
     token = os.environ.get("LICHESS_BOT_TOKEN") or lichess.get("token", "")
-    if not token and lichess.get("token_file"):
-        token_path = Path(lichess["token_file"])
+    token_file = os.environ.get("LICHESS_BOT_TOKEN_FILE") or lichess.get("token_file")
+    if not token and token_file:
+        token_path = Path(token_file)
         if not token_path.is_absolute():
             token_path = path.parent / token_path
         token = token_path.read_text(encoding="utf-8").strip()
