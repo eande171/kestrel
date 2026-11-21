@@ -133,7 +133,7 @@ impl NetSearch {
             endgame_tuning: true,
             extensions: true,
             check_extensions: CHECK_EXTENSIONS,
-            reductions: false,
+            reductions: true,
             nodes: 0,
             evaluations: 0,
             completed_depth: 0,
