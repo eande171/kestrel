@@ -1,0 +1,20 @@
+# Kestrel Lichess Bot For CasaOS
+name: kestrel
+services:
+  kestrel:
+    image: kestrel-bot:latest
+    pull_policy: never
+    container_name: kestrel
+    restart: unless-stopped
+    stop_signal: SIGINT
+    stop_grace_period: 30s
+    volumes:
+      - /DATA/AppData/kestrel/config:/config
+      - /DATA/AppData/kestrel/secrets/lichess_token.txt:/run/secrets/lichess_token:ro
+    environment:
+      LICHESS_BOT_TOKEN_FILE: /run/secrets/lichess_token
+    x-casaos:
+      title:
+        en_us: Kestrel
+      description:
+        en_us: Kestrel chess bot playing on Lichess

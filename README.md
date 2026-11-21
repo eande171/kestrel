@@ -169,6 +169,7 @@ docker compose logs -f
 - The token reaches the container as a Docker secret through `LICHESS_BOT_TOKEN_FILE`; it is never part of the image or the config folder.
 - `config/` is mounted read write, so opponent memory and `refusals.json` survive restarts and image rebuilds. Swap models by replacing the two model files and running `docker compose restart`.
 - `docker compose down` sends Ctrl+C (SIGINT), so the bot stops cleanly.
+- On CasaOS, which runs images rather than building them: build here and save the image with `docker save kestrel-bot:latest -o dist/kestrel-bot.tar`, load it on the server with `docker load -i kestrel-bot.tar`, then import `compose.casaos.yaml` as a custom app. It keeps the config in `/DATA/AppData/kestrel/config` and the token in `/DATA/AppData/kestrel/secrets/lichess_token.txt`, both owned by uid 1000.
 - The engine is built for x86-64-v3 (AVX2). It picks the AVX-VNNI kernel at runtime where the CPU has it and the AVX2 kernel otherwise, with identical results. For an older CPU without AVX2, build with `docker compose build --build-arg TARGET_CPU=x86-64`, which is several times slower.
 
 ## Baseline engine

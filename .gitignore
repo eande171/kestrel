@@ -16,6 +16,7 @@ bot.toml
 token*.txt
 config/
 secrets/
+dist/
 
 # Local Notes
 NOTES.md
