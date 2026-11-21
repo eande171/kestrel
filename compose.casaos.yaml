@@ -8,6 +8,14 @@ services:
     restart: unless-stopped
     stop_signal: SIGINT
     stop_grace_period: 30s
+    cpu_shares: 50
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 512M
+        reservations:
+          memory: 256M
     volumes:
       - /DATA/AppData/kestrel/config:/config
       - /DATA/AppData/kestrel/secrets/lichess_token.txt:/run/secrets/lichess_token:ro
