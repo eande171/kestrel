@@ -31,8 +31,8 @@ commands:
   net-eval --weights FILE --fens FILE --out FILE   write wdl and policy logits for each \"fen<TAB>repetitions\" line
   net-bench --weights FILE                          time the network on a few positions
   net-uci --weights FILE [--depth N]               the network search as a UCI engine, with go infinite and stop for pondering
-  net-match --weights FILE [--games N] [--seconds S] [--a no_check_extensions,no_extensions,no_endgame_tuning]
-        play a search with the listed settings against the default one at equal time
+  net-match --weights FILE [--b-weights FILE] [--games N] [--seconds S] [--int8] [--a no_check_extensions,no_extensions,no_endgame_tuning]
+        play a search with the listed settings against the default one at equal time, B using its own weights if given
   net-search --weights FILE --fens FILE [--depth N] [--seconds S]
         search each \"fen<TAB>moves\" line and print the move, score, depth reached and positions expanded";
 
@@ -137,7 +137,8 @@ fn main() {
             };
             let settings: Vec<String> = opts.get("a").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default();
             let a_network = std::rc::Rc::new(load_network(weights, opts.contains_key("int8") || settings.iter().any(|s| s == "int8")));
-            let b_network = std::rc::Rc::new(load_network(weights, opts.contains_key("int8")));
+            let b_weights = opts.get("b-weights").unwrap_or(weights);
+            let b_network = std::rc::Rc::new(load_network(b_weights, opts.contains_key("int8")));
             net_match([a_network, b_network], get_opt(&opts, "games", 40u32), get_opt(&opts, "seconds", 1.0f64), &settings);
         }
         "net-bench" => {

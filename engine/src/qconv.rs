@@ -1,5 +1,11 @@
 // Int8 Convolution
 
+use std::cell::RefCell;
+
+thread_local! {
+    static SCRATCH: RefCell<(Vec<u8>, Vec<i32>)> = const { RefCell::new((Vec::new(), Vec::new())) };
+}
+
 pub struct QConv {
     weight: Vec<i16>,
     quads: Vec<i8>,
@@ -33,30 +39,39 @@ impl QConv {
                 }
             }
         }
-        let vnni = inputs % 4 == 0 && vnni_available();
+        let vnni = inputs % 4 == 0 && matches!(outputs, 32 | 64 | 96) && vnni_available();
         Some(QConv { weight: packed, quads, vnni, scale, bias: bias.to_vec(), inputs, outputs })
     }
 
+    // Inputs Are Never Negative
     pub fn apply(&self, input: &[f32], out: &mut [f32]) {
         let top = input.iter().fold(0.0f32, |a, &b| a.max(b));
         let act_scale = if top > 0.0 { top / 255.0 } else { 1.0 };
-        let level = |x: f32| (x / act_scale).round() as i32;
-        let mut acc = vec![0i32; 64 * self.outputs];
-        if self.vnni {
-            let quads: Vec<i32> = input
-                .chunks_exact(4)
-                .map(|q| level(q[0]) | (level(q[1]) << 8) | (level(q[2]) << 16) | (level(q[3]) << 24))
-                .collect();
-            accumulate_vnni(&self.quads, &quads, self.inputs / 4, self.outputs, &mut acc);
-        } else {
-            let pairs: Vec<i32> = input.chunks_exact(2).map(|p| (level(p[0]) & 0xffff) | (level(p[1]) << 16)).collect();
-            self.accumulate(&pairs, &mut acc);
-        }
-        for (sq, row) in acc.chunks_exact(self.outputs).enumerate() {
-            for (co, &total) in row.iter().enumerate() {
-                out[sq * self.outputs + co] = total as f32 * act_scale * self.scale[co] + self.bias[co];
+        let inverse = 1.0 / act_scale;
+        SCRATCH.with_borrow_mut(|(bytes, acc)| {
+            acc.resize(64 * self.outputs, 0);
+            if self.vnni {
+                if bytes.len() != 100 * self.inputs {
+                    *bytes = vec![0; 100 * self.inputs];
+                }
+                for (sq, square) in input.chunks_exact(self.inputs).enumerate() {
+                    let start = padded(sq) * self.inputs;
+                    for (dest, &x) in bytes[start..start + self.inputs].iter_mut().zip(square) {
+                        *dest = (x * inverse + 0.5) as u8;
+                    }
+                }
+                accumulate_vnni(&self.quads, bytes, self.inputs / 4, self.outputs, acc);
+            } else {
+                let level = |x: f32| (x * inverse + 0.5) as i32;
+                let pairs: Vec<i32> = input.chunks_exact(2).map(|p| level(p[0]) | (level(p[1]) << 16)).collect();
+                self.accumulate(&pairs, acc);
             }
-        }
+            for (row, dest) in acc.chunks_exact(self.outputs).zip(out.chunks_exact_mut(self.outputs)) {
+                for (((d, &total), &scale), &bias) in dest.iter_mut().zip(row).zip(&self.scale).zip(&self.bias) {
+                    *d = total as f32 * (act_scale * scale) + bias;
+                }
+            }
+        });
     }
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
@@ -144,37 +159,53 @@ fn vnni_available() -> bool {
     false
 }
 
+// Padded Board
+fn padded(sq: usize) -> usize {
+    (sq / 8 + 1) * 10 + sq % 8 + 1
+}
+
 #[cfg(target_arch = "x86_64")]
-fn accumulate_vnni(weight: &[i8], quads: &[i32], quarter: usize, cout: usize, acc: &mut [i32]) {
-    unsafe { vnni_kernel(weight, quads, quarter, cout, acc) }
+fn accumulate_vnni(weight: &[i8], bytes: &[u8], quarter: usize, cout: usize, acc: &mut [i32]) {
+    assert!(weight.len() >= 9 * quarter * cout * 4 && bytes.len() >= 400 * quarter && acc.len() >= 64 * cout);
+    unsafe {
+        match cout {
+            32 => vnni_kernel::<4>(weight, bytes, quarter, acc),
+            64 => vnni_kernel::<8>(weight, bytes, quarter, acc),
+            96 => vnni_kernel::<12>(weight, bytes, quarter, acc),
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn accumulate_vnni(_: &[i8], _: &[i32], _: usize, _: usize, _: &mut [i32]) {
+fn accumulate_vnni(_: &[i8], _: &[u8], _: usize, _: usize, _: &mut [i32]) {
     unreachable!()
 }
 
+// Register Accumulators
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,avxvnni")]
-unsafe fn vnni_kernel(weight: &[i8], quads: &[i32], quarter: usize, cout: usize, acc: &mut [i32]) {
+unsafe fn vnni_kernel<const L: usize>(weight: &[i8], bytes: &[u8], quarter: usize, acc: &mut [i32]) {
     use std::arch::x86_64::*;
-    let lanes = cout / 8;
-    for (sq, total) in acc.chunks_exact_mut(cout).enumerate() {
-        let mut sums = [_mm256_setzero_si256(); 12];
-        for (tap, nsq) in neighbours(sq) {
-            let row = &quads[nsq * quarter..(nsq + 1) * quarter];
-            let taps = &weight[tap * quarter * cout * 4..(tap + 1) * quarter * cout * 4];
-            for (p, &quad) in row.iter().enumerate() {
-                let a = _mm256_set1_epi32(quad);
-                let w = taps[p * cout * 4..].as_ptr();
-                for (k, sum) in sums.iter_mut().take(lanes).enumerate() {
-                    let wv = unsafe { _mm256_loadu_si256(w.add(k * 32) as *const __m256i) };
-                    *sum = _mm256_dpbusd_avx_epi32(*sum, a, wv);
+    let cout = L * 8;
+    unsafe {
+        for sq in 0..64 {
+            let (rank, file) = (sq / 8, sq % 8);
+            let mut sums = [_mm256_setzero_si256(); L];
+            for tap in 0..9 {
+                let row = bytes.as_ptr().add(((rank + tap / 3) * 10 + file + tap % 3) * quarter * 4) as *const i32;
+                let taps = weight.as_ptr().add(tap * quarter * cout * 4);
+                for p in 0..quarter {
+                    let a = _mm256_set1_epi32(row.add(p).read_unaligned());
+                    let w = taps.add(p * cout * 4);
+                    for (k, sum) in sums.iter_mut().enumerate() {
+                        *sum = _mm256_dpbusd_avx_epi32(*sum, a, _mm256_loadu_si256(w.add(k * 32) as *const __m256i));
+                    }
                 }
             }
-        }
-        for (k, sum) in sums.iter().take(lanes).enumerate() {
-            unsafe { _mm256_storeu_si256(total.as_mut_ptr().add(k * 8) as *mut __m256i, *sum) };
+            for (k, sum) in sums.iter().enumerate() {
+                _mm256_storeu_si256(acc.as_mut_ptr().add(sq * cout + k * 8) as *mut __m256i, *sum);
+            }
         }
     }
 }

@@ -55,7 +55,12 @@ pub struct Network {
     value_conv: Conv,
     fc1: Conv,
     fc2: Conv,
-    int8_trunk: Option<Vec<(QConv, QConv)>>,
+    int8: Option<Int8>,
+}
+
+struct Int8 {
+    trunk: Vec<(QConv, QConv)>,
+    policy: QConv,
 }
 
 // Expected Score
@@ -95,14 +100,15 @@ impl Network {
         if r.pos != bytes.len() {
             return Err("weights file has extra bytes".into());
         }
-        Ok(Network { stem, trunk, policy, query, key, square_bias, value_conv, fc1, fc2, int8_trunk: None })
+        Ok(Network { stem, trunk, policy, query, key, square_bias, value_conv, fc1, fc2, int8: None })
     }
 
-    // Int8 Trunk
+    // Int8 Trunk And Policy
     pub fn use_int8(&mut self) -> bool {
         let quantize = |c: &Conv| QConv::new(&c.weight, &c.bias, c.inputs, c.outputs);
-        self.int8_trunk = self.trunk.iter().map(|(a, b)| Some((quantize(a)?, quantize(b)?))).collect();
-        self.int8_trunk.is_some()
+        let trunk: Option<Vec<_>> = self.trunk.iter().map(|(a, b)| Some((quantize(a)?, quantize(b)?))).collect();
+        self.int8 = trunk.zip(quantize(&self.policy)).map(|(trunk, policy)| Int8 { trunk, policy });
+        self.int8.is_some()
     }
 
     // Value Only
@@ -122,13 +128,13 @@ impl Network {
         conv3x3(&self.stem, planes, &mut x);
         relu(&mut x);
         for (index, (first, second)) in self.trunk.iter().enumerate() {
-            match &self.int8_trunk {
-                Some(q) => q[index].0.apply(&x, &mut y),
+            match &self.int8 {
+                Some(q) => q.trunk[index].0.apply(&x, &mut y),
                 None => conv3x3(first, &x, &mut y),
             }
             relu(&mut y);
-            match &self.int8_trunk {
-                Some(q) => q[index].1.apply(&y, &mut z),
+            match &self.int8 {
+                Some(q) => q.trunk[index].1.apply(&y, &mut z),
                 None => conv3x3(second, &y, &mut z),
             }
             for (a, b) in x.iter_mut().zip(&z) {
@@ -157,33 +163,47 @@ impl Network {
     }
 
     fn policy_head(&self, x: &[f32], indices: &[usize]) -> Vec<f32> {
-        let kd = self.query.outputs;
+        let (kd, channels) = (self.query.outputs, self.policy.outputs);
         let mut p = vec![0.0; x.len()];
-        conv3x3(&self.policy, x, &mut p);
+        match &self.int8 {
+            Some(q) => q.policy.apply(x, &mut p),
+            None => conv3x3(&self.policy, x, &mut p),
+        }
         relu(&mut p);
-        let mut q = vec![0.0; 64 * kd];
-        conv1x1(&self.query, &p, &mut q);
-        let mut k = vec![0.0; 64 * kd * 4];
-        conv1x1(&self.key, &p, &mut k);
+        let square = |sq: usize| &p[sq * channels..(sq + 1) * channels];
         let scale = 1.0 / (kd as f32).sqrt();
-        let dot = |from: usize, to: usize, piece: usize| -> f32 {
-            let qs = &q[from * kd..(from + 1) * kd];
-            let ks = &k[(to * 4 + piece) * kd..(to * 4 + piece + 1) * kd];
-            qs.iter().zip(ks).map(|(a, b)| a * b).sum::<f32>() * scale
-        };
+
+        // Needed Squares Only
+        let mut q = vec![0.0; 64 * kd];
+        let mut k = vec![0.0; 256 * kd];
+        let (mut have_q, mut have_k) = ([false; 64], [false; 256]);
         indices
             .iter()
             .map(|&index| {
-                if index < 4096 {
-                    return dot(index / 64, index % 64, 0) + self.square_bias[index];
+                let (from, to, piece) = if index < 4096 {
+                    (index / 64, index % 64, 0)
+                } else {
+                    let i = index - 4096;
+                    let (piece, file, direction) = (i / 24, (i % 24) / 3, i % 3);
+                    let to_file = file as isize + direction as isize - 1;
+                    if !(0..8).contains(&to_file) {
+                        return MASKED;
+                    }
+                    (48 + file, 56 + to_file as usize, piece + 1)
+                };
+                if !have_q[from] {
+                    project(&self.query, square(from), 0, &mut q[from * kd..(from + 1) * kd]);
+                    have_q[from] = true;
                 }
-                let i = index - 4096;
-                let (piece, file, direction) = (i / 24, (i % 24) / 3, i % 3);
-                let to_file = file as isize + direction as isize - 1;
-                if !(0..8).contains(&to_file) {
-                    return MASKED;
+                let slot = to * 4 + piece;
+                if !have_k[slot] {
+                    project(&self.key, square(to), piece * kd, &mut k[slot * kd..(slot + 1) * kd]);
+                    have_k[slot] = true;
                 }
-                dot(48 + file, 56 + to_file as usize, piece + 1)
+                let qs = &q[from * kd..(from + 1) * kd];
+                let ks = &k[slot * kd..(slot + 1) * kd];
+                let logit = qs.iter().zip(ks).map(|(a, b)| a * b).sum::<f32>() * scale;
+                if index < 4096 { logit + self.square_bias[index] } else { logit }
             })
             .collect()
     }
@@ -239,6 +259,20 @@ fn conv3x3_any(conv: &Conv, input: &[f32], out: &mut [f32]) {
                     *a += v * w;
                 }
             }
+        }
+    }
+}
+
+// One Square Some Outputs
+fn project(conv: &Conv, input: &[f32], first: usize, out: &mut [f32]) {
+    out.copy_from_slice(&conv.bias[first..first + out.len()]);
+    for (ci, &v) in input.iter().enumerate() {
+        if v == 0.0 {
+            continue;
+        }
+        let w = &conv.weight[ci * conv.outputs + first..ci * conv.outputs + first + out.len()];
+        for (o, w) in out.iter_mut().zip(w) {
+            *o += v * w;
         }
     }
 }
