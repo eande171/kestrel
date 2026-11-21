@@ -29,6 +29,7 @@ RESERVE_SECONDS = 30
 LEFTOVER_GRACE_SECONDS = 10
 FIRST_MOVE_MS = 5000
 RATE_LIMIT_PAUSE_MINUTES = 30
+MAX_RATE_LIMIT_PAUSE_MINUTES = 240
 FAILED_CHALLENGE_HOURS = 6
 NEVER_AGAIN = {"nobot", "generic", "variant", "standard"}
 
@@ -205,9 +206,14 @@ class Bot:
         self.matchmaking_paused_until = 0.0
         self.sent: dict[str, tuple[str, str]] = {}
         self.closed: set[str] = set()
-        self.refuses: set[str] = set()
-        self.casual_only: set[str] = set()
-        self.refused_controls: dict[str, set[str]] = {}
+        self.limit_pause_minutes = RATE_LIMIT_PAUSE_MINUTES
+        self.refusals_file = config.memory_file.with_name("refusals.json") if config.memory_file else None
+        saved = {}
+        if self.refusals_file and self.refusals_file.exists():
+            saved = json.loads(self.refusals_file.read_text())
+        self.refuses: set[str] = set(saved.get("refuses", []))
+        self.casual_only: set[str] = set(saved.get("casual_only", []))
+        self.refused_controls: dict[str, set[str]] = {k: set(v) for k, v in saved.get("refused_controls", {}).items()}
 
     def active_games(self) -> int:
         """Returns running games plus accepted challenges whose game has not started yet."""
@@ -351,9 +357,12 @@ class Bot:
                 "color": "random", "variant": "standard"}
         reply = self.api.post(f"/api/challenge/{opponent['username']}", form, wait_if_limited=False)
         if self.api.rate_limited:
-            self.matchmaking_paused_until = time.time() + RATE_LIMIT_PAUSE_MINUTES * 60
-            log(f"matchmaking: paused for {RATE_LIMIT_PAUSE_MINUTES} minutes by the rate limit")
-        elif reply is None:
+            self.matchmaking_paused_until = time.time() + self.limit_pause_minutes * 60
+            log(f"matchmaking: paused for {self.limit_pause_minutes} minutes by the rate limit")
+            self.limit_pause_minutes = min(self.limit_pause_minutes * 2, MAX_RATE_LIMIT_PAUSE_MINUTES)
+            return
+        self.limit_pause_minutes = RATE_LIMIT_PAUSE_MINUTES
+        if reply is None:
             self.challenged[name] = now + FAILED_CHALLENGE_HOURS * 3600
         if reply and reply.get("id"):
             with self.lock:
@@ -374,6 +383,14 @@ class Bot:
             self.casual_only.add(name)
         elif reason in ("timecontrol", "toofast", "tooslow"):
             self.refused_controls.setdefault(name, set()).add(control)
+        else:
+            return
+        if self.refusals_file:
+            saved = {"refuses": sorted(self.refuses), "casual_only": sorted(self.casual_only),
+                     "refused_controls": {k: sorted(v) for k, v in self.refused_controls.items()}}
+            temporary = self.refusals_file.with_suffix(".tmp")
+            temporary.write_text(json.dumps(saved, indent=1))
+            os.replace(temporary, self.refusals_file)
 
     def cancel_leftover(self, challenge_id: str) -> None:
         """Cancels a challenge from this account that matchmaking did not send, once its reply has had time to arrive."""
