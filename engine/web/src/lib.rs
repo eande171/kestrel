@@ -8,6 +8,7 @@ use kestrel::game::Game;
 use kestrel::net::Network;
 use kestrel::netsearch::NetSearch;
 
+#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn now_ms() -> f64;
 }
