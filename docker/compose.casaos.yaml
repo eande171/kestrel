@@ -1,9 +1,8 @@
-# Kestrel Lichess Bot For CasaOS
+# Kestrel Bot For CasaOS
 name: kestrel
 services:
   kestrel:
-    image: kestrel-bot:latest
-    pull_policy: never
+    image: ghcr.io/eande171/kestrel-bot:latest
     container_name: kestrel
     restart: unless-stopped
     stop_signal: SIGINT

@@ -1,8 +1,10 @@
 # Kestrel Lichess Bot
 services:
   kestrel:
-    build: .
-    image: kestrel-bot
+    image: ghcr.io/eande171/kestrel-bot:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     restart: unless-stopped
     stop_grace_period: 30s
     volumes:
