@@ -5,7 +5,11 @@ const GLYPHS = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' };
 const OUTLINES = { k: '♔', q: '♕', r: '♖', b: '♗', n: '♘', p: '♙' };
 const TEXT_STYLE = '︎';
 const FILES = 'abcdefgh';
-const STRENGTH_NAMES = { 0: 'Instinct', 2: 'Careful', 3: 'Strong' };
+const STRENGTHS = {
+    instinct: { name: 'Instinct', depth: 1, millis: 0, randomness: 0.03 },
+    careful: { name: 'Careful', depth: 10, millis: 500, randomness: 0.02 },
+    strong: { name: 'Strong', depth: 10, millis: 2500, randomness: 0.01 },
+};
 const ENDINGS = {
     stalemate: 'Draw by stalemate.',
     repetition: 'Draw by threefold repetition.',
@@ -20,7 +24,7 @@ const game = {
     fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
     status: 'ongoing',
     human: 'w',
-    depth: 3,
+    strength: 'careful',
     flipped: false,
     busy: false,
     resigned: false,
@@ -34,9 +38,10 @@ const el = id => document.getElementById(id);
 
 // Preferences
 function loadPrefs() {
-    const fallback = { color: 'random', depth: '3' };
+    const fallback = { color: 'random', strength: 'careful' };
     try {
-        return { ...fallback, ...JSON.parse(localStorage.getItem('kestrel-prefs') || '{}') };
+        const saved = { ...fallback, ...JSON.parse(localStorage.getItem('kestrel-prefs') || '{}') };
+        return STRENGTHS[saved.strength] ? saved : { ...saved, strength: fallback.strength };
     } catch {
         return fallback;
     }
@@ -50,16 +55,25 @@ function savePrefs() {
     }
 }
 
-// Server Calls
-async function api(path, body) {
-    const res = await fetch(path, {
-        method: body ? 'POST' : 'GET',
-        headers: body ? { 'Content-Type': 'application/json' } : {},
-        body: body ? JSON.stringify(body) : undefined,
+// Engine Calls
+const worker = new Worker('engine-worker.js');
+const pending = new Map();
+let nextCall = 1;
+
+worker.onmessage = event => {
+    const { id, ok, data, error } = event.data;
+    const call = pending.get(id);
+    pending.delete(id);
+    if (ok) call.resolve(data);
+    else call.reject(new Error(error));
+};
+
+function engine(type, args = {}) {
+    return new Promise((resolve, reject) => {
+        const id = nextCall++;
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ id, type, ...args });
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || res.statusText);
-    return data;
 }
 
 // Board Helpers
@@ -148,7 +162,7 @@ function statusText() {
 }
 
 function renderStrips() {
-    const strength = STRENGTH_NAMES[game.depth] || `Depth ${game.depth}`;
+    const strength = STRENGTHS[game.strength].name;
     const strip = color => {
         const human = color === game.human;
         const name = human ? 'You' : `Kestrel <span class="meta">${strength.toLowerCase()}</span>`;
@@ -194,7 +208,7 @@ function render() {
 
 // Game Flow
 async function refresh() {
-    const data = await api('/api/position', { moves: game.moves });
+    const data = await engine('position', { moves: game.moves });
     game.fen = data.fen;
     game.status = data.status;
     game.legal = data.legal;
@@ -206,7 +220,7 @@ async function guarded(fn) {
         await fn();
     } catch (err) {
         game.busy = false;
-        game.error = `Lost contact with the local server (${err.message}). Is scripts/web.ps1 still running?`;
+        game.error = `The engine stopped: ${err.message}.`;
     }
     render();
 }
@@ -214,7 +228,7 @@ async function guarded(fn) {
 async function engineTurn() {
     game.busy = true;
     render();
-    const reply = await api('/api/move', { moves: game.moves, depth: game.depth });
+    const reply = await engine('move', { moves: game.moves, strength: STRENGTHS[game.strength] });
     game.moves.push(reply.uci);
     game.sans.push(reply.san);
     game.lastThink = reply.seconds;
@@ -263,7 +277,7 @@ function showPromotion(options) {
 async function newGame() {
     const color = prefs.color === 'random' ? (Math.random() < 0.5 ? 'white' : 'black') : prefs.color;
     Object.assign(game, {
-        moves: [], sans: [], legal: [], human: color === 'white' ? 'w' : 'b', depth: Number(prefs.depth),
+        moves: [], sans: [], legal: [], human: color === 'white' ? 'w' : 'b', strength: prefs.strength,
         resigned: false, selected: null, lastThink: null, busy: false,
     });
     game.flipped = game.human === 'b';
@@ -364,7 +378,7 @@ function pgnText() {
     else if (game.status === 'checkmate_black') result = '0-1';
     else if (game.status !== 'ongoing') result = '1/2-1/2';
     const date = new Date().toISOString().slice(0, 10).replaceAll('-', '.');
-    const ai = `Kestrel (${(STRENGTH_NAMES[game.depth] || game.depth).toString().toLowerCase()})`;
+    const ai = `Kestrel (${STRENGTHS[game.strength].name.toLowerCase()})`;
     const [white, black] = game.human === 'w' ? ['You', ai] : [ai, 'You'];
     const body = game.sans.map((san, i) => (i % 2 === 0 ? `${i / 2 + 1}. ${san}` : san)).join(' ');
     return `[Event "Kestrel game"]\n[Date "${date}"]\n[White "${white}"]\n[Black "${black}"]\n[Result "${result}"]\n\n${body} ${result}\n`;
@@ -383,7 +397,7 @@ async function copyPgn() {
 
 function init() {
     setupSegmented('color-choice', 'color');
-    setupSegmented('depth-choice', 'depth');
+    setupSegmented('depth-choice', 'strength');
     const board = el('board');
     board.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('pointermove', onPointerMove);
@@ -394,10 +408,10 @@ function init() {
     el('resign').addEventListener('click', () => { game.resigned = true; game.selected = null; render(); });
     el('copy-pgn').addEventListener('click', copyPgn);
     render();
-    api('/api/info')
+    engine('info')
         .then(info => {
             el('model-info').textContent =
-                `Model ${info.run}, step ${Number(info.step).toLocaleString()}, ${Number(info.parameters).toLocaleString()} parameters, running on ${info.device}.`;
+                `The network here has ${info.blocks} residual blocks of ${info.channels} channels and runs in your browser.`;
         })
         .catch(() => {});
     guarded(newGame);

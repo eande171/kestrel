@@ -18,6 +18,10 @@ config/
 secrets/
 dist/
 
+# Web Build Output
+docs/play/kestrel_web.wasm
+site/
+
 # Local Notes
 NOTES.md
 REPORT.md

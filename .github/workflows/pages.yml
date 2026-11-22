@@ -1,0 +1,60 @@
+# Publish Site
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "engine/src/**"
+      - "engine/web/**"
+      - "engine/Cargo.*"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine/web -> ../target-web
+
+      # WebAssembly Engine
+      - name: Build the engine
+        working-directory: engine/web
+        run: |
+          cargo build --release --locked --target wasm32-unknown-unknown --target-dir ../target-web
+          cp ../target-web/wasm32-unknown-unknown/release/kestrel_web.wasm ../../docs/play/kestrel_web.wasm
+          ls -l ../../docs/play
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
